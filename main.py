@@ -301,8 +301,8 @@ def icl_number_test():
 def test_1():
     pass
 
-icl_blocks =  [ "test_icls/ICL/EmptyModule.icl", "test_icls/ICL/Instruments.icl", "test_icls/ICL/NetworkStructs.icl"]
-icl_tests = ["test_icls/ICL/Basic/TreeFlat/TreeFlat.icl"]
+icl_blocks =  [ "test_icls/benchmarks/ICL/EmptyModule.icl", "test_icls/benchmarks/ICL/Instruments.icl", "test_icls/benchmarks/ICL/NetworkStructs.icl"]
+icl_tests = ["test_icls/benchmarks/ICL/Basic/TreeFlat/TreeFlat.icl"]
 icl_all = icl_blocks + icl_tests
 def test_2():
     icl_files = ["test_icls/scan_mux_001.icl", "test_icls/scan_mux_002.icl", "test_icls/scan_mux_003.icl"] + icl_blocks
