@@ -220,8 +220,7 @@ toTckPort_name : port_name ;
 
 clockPort_def : 'ClockPort' clockPort_name (';' | ( '{' clockPort_item* '}' ));
 clockPort_name : port_name ;
-clockPort_item : attribute_def |
-clockPort_diffPort ;
+clockPort_item : attribute_def | clockPort_diffPort ;
 clockPort_diffPort : 'DifferentialInvOf' concat_clock_signal ';' ;
 toClockPort_def : 'ToClockPort' toClockPort_name (';' | ( '{' toClockPort_item+ '}' ) ) ;
 toClockPort_name : port_name ;

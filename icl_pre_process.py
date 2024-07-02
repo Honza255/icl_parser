@@ -1,14 +1,11 @@
 from typing import Any
-from antlr4 import *
-import sys
 
+from antlr4 import *
 from parser.iclLexer import iclLexer
 from parser.iclListener import iclListener
 from parser.iclParser import iclParser
 
-from icl_number import *
-from icl_signal import *
-from icl_item import *
+from icl_items import *
 
 class IclPreProcess(iclListener):
 
