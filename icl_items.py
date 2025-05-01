@@ -302,14 +302,22 @@ class ConcatSig():
         self.instance: "IclInstance" = instance
         self.concat_sigs: list[IclSignal,IclNumber] = concat_sigs
 
+        assert(len(concat_sigs) > 0)
+        assert(concat_sigs[0] != None)
+
         # Unsized check can be done immediately
         self.check_unsized_numbers()
         
     def check(self) -> None:
         valid_types = {
-            "scan": [IclScanInPort, IclScanRegister, IclScanMux, IclScanOutPort, IclAlias],
-            "data": [IclDataInPort, IclSelectPort, IclScanRegister,  IclLogicSignal, IclAlias, IclDataRegister],
-            "alias": [IclDataInPort, IclDataOutPort, IclScanRegister]
+            "scan" : [IclScanInPort, IclScanRegister, IclScanMux, IclScanOutPort, IclAlias],
+            "data" : [IclDataInPort, IclDataOutPort, IclSelectPort, IclScanRegister,  IclLogicSignal, IclAlias, IclDataRegister, IclToIrSelectPort, IclToSelectPort, IclOneHotDataGroup, IclOneHotScanGroup, IclDataMux],
+            "alias": [IclDataInPort, IclDataOutPort, IclScanRegister, IclDataRegister],
+            "reset": [IclResetPort, IclToResetPort, IclScanRegister, IclDataInPort, IclDataOutPort],
+            "to_capture_en": [IclCaptureEnable, IclToCaptureEnable],
+            "shiften": [IclShiftEnable, IclToShiftEnable],
+            "updateen": [IclUpdateEnable, IclToUpdateEnable],
+            "unknown": []
         }
 
         for sig in self.concat_sigs:
@@ -317,7 +325,11 @@ class ConcatSig():
                 continue
             checkSigExistance(self.instance, sig)
             icl_item = self.instance.get_icl_item_name(sig.get_relative_name())
-            assert type(icl_item) in valid_types[self.type], f"invalid type {type(icl_item)} for {self.type} in ConcatSig {self.concat_sigs}" 
+            if(self.type != "unknown"):
+                assert type(icl_item) in valid_types[self.type], f"invalid type {type(icl_item)} for {self.type} in ConcatSig {self.concat_sigs}" 
+
+    def set_type(self, type:str):
+        self.type = type
 
     def check_unsized_numbers(self) -> int:
         unsized_numbers = sum(1 for sig in self.concat_sigs if isinstance(sig, IclNumber) and not sig.sized_number())
@@ -513,23 +525,28 @@ class IclItem:
 
     def __init__(
             self,
+            instance: "IclInstance",
             icl_name: str,
             icl_hier: str,
             module_scope: str,
             ctx: str
         ) -> None:
-            
+
+        self.instance: IclInstance = instance            
         self.ctx = ctx
         self.name = icl_name
         self.hier = icl_hier
         self.module_scope = module_scope
-        self.icl_items = []
-        
-    def get_hier(self) -> str:    
-        return self.hier
+        self.icl_items = []   
+
+    def get_instance(self) -> "IclInstance":
+        return self.instance
 
     def get_name(self):
         return self.name
+
+    def get_hier(self) -> str:    
+        return self.hier
     
     def get_module_scope(self):
         return self.module_scope
@@ -578,9 +595,9 @@ class IclItem:
 class IclInstance(IclItem):
 
     def __init__(self, icl_name: str, icl_hier: str, module_scope: str, ctx) -> None:
-        super().__init__(icl_name, icl_hier, module_scope, ctx)
+        super().__init__(self, icl_name, icl_hier, module_scope, ctx)
         self.attributes = {}
-        self.connections = []
+        self.connections: list[{IclSignal,ConcatSig}] = []
         self.parameters_override = {}
         self.parameters = {}
 
@@ -722,7 +739,7 @@ class IclEnum(IclItem):
             enum_items: list[tuple[str,IclNumber]],
             ctx: str
         ) -> None:
-        super().__init__(enum_name, instance.get_hier(), instance.get_hier(), ctx)
+        super().__init__(instance, enum_name, instance.get_hier(), instance.get_hier(), ctx)
 
         self.enum_items: list[tuple[str,IclNumber]] = enum_items
         self.enum_table = {}
@@ -774,8 +791,7 @@ class IclAlias(IclItem):
             items: dict,
             ctx: str
         ) -> None:
-        super().__init__(alias_name.get_name(), instance.get_hier(), instance.get_hier(), ctx)
-        self.instance: IclInstance = instance
+        super().__init__(instance, alias_name.get_name(), instance.get_hier(), instance.get_hier(), ctx)
 
         self.alias_sig: IclSignal = alias_name
         self.concat_sig: ConcatSig = concat_sig
@@ -825,7 +841,7 @@ class IclAlias(IclItem):
 class IclAttribute(IclItem):
 
     def __init__(self, instance: IclInstance, ctx, att_name: str, att_data: str | IclNumber) -> None:
-        super().__init__(att_name, instance.get_hier(), instance.get_module_scope(), ctx)
+        super().__init__(instance, att_name, instance.get_hier(), instance.get_module_scope(), ctx)
         self.att_data = att_data
 
     def check(self):
@@ -846,9 +862,7 @@ class IclScanRegister(IclItem):
             ctx: str
         ) -> None:
         
-        super().__init__(scan_reg.get_name(), instance.get_hier(), instance.get_hier(), ctx)
-
-        self.instance = instance
+        super().__init__(instance, scan_reg.get_name(), instance.get_hier(), instance.get_hier(), ctx)
 
         # Inital values
         self.scan_reg = scan_reg
@@ -917,7 +931,7 @@ class IclScanRegister(IclItem):
         return self.get_item_all_named_indexes(self.scan_reg)[0]
 
     def get_named_lsb(self) -> str:
-        return self.get_item_all_named_indexes(self.scan_reg)[1]
+        return self.get_item_all_named_indexes(self.scan_reg)[-1]
         
     def get_scanin_named_index(self) -> str:
         scan_in = self.get_signal_all_named_indexes(self.instance, [self.scan_in])
@@ -980,8 +994,7 @@ class IclLogicSignal(IclItem):
             expression: list[list:str],
             ctx: str
         ) -> None:
-        super().__init__(icl_name.get_name(), instance.get_hier(), instance.get_hier(), ctx)
-        self.instance: IclInstance = instance
+        super().__init__(instance, icl_name.get_name(), instance.get_hier(), instance.get_hier(), ctx)
         self.icl_name: IclSignal = icl_name
         self.expression: list = expression
 
@@ -1242,8 +1255,7 @@ class IclDataRegister(IclItem):
             icl_name: IclSignal,
             ctx: str
         ) -> None:
-        super().__init__(icl_name.get_name(), instance.get_hier(), instance.get_hier(), ctx)
-        self.instance: IclInstance = instance
+        super().__init__(instance, icl_name.get_name(), instance.get_hier(), instance.get_hier(), ctx)
         self.icl_name: IclSignal = icl_name
 
     def get_all_named_indexes(self) -> list[str]:
@@ -1251,15 +1263,67 @@ class IclDataRegister(IclItem):
 
     def get_all_indexes(self) -> list[int]:
         return self.get_item_all_indexes(self.icl_name)
-    
+
+    def get_vector_size(self) -> int:
+        return len(self.get_all_indexes())
+        
     def check(self):
         pass
+
+class IclOneHotScanGroup(IclItem):
+
+    def __init__(
+            self,
+            instance: IclInstance,
+            icl_name: IclSignal,
+            selectee: list[ConcatSig],
+            ctx: str
+        ) -> None:
+        super().__init__(instance, icl_name.get_name(), instance.get_hier(), instance.get_hier(), ctx)
+        self.icl_name: IclSignal = icl_name
+        self.selectee:  list[ConcatSig] = selectee
+
+    def get_all_named_indexes(self) -> list[str]:
+        return self.get_item_all_named_indexes(self.icl_name)
+
+    def get_all_indexes(self) -> list[int]:
+        return self.get_item_all_indexes(self.icl_name)
+
+    def get_vector_size(self) -> int:
+        return len(self.get_all_indexes())
+        
+    def check(self):
+        pass
+
+class IclOneHotDataGroup(IclItem):
+    def __init__(
+            self,
+            instance: IclInstance,
+            icl_name: IclSignal,
+            selectee: list,
+            ctx: str
+        ) -> None:
+        super().__init__(instance, icl_name.get_name(), instance.get_hier(), instance.get_hier(), ctx)
+        self.icl_name: IclSignal = icl_name
+        self.selectee: list = selectee
+
+    def get_all_named_indexes(self) -> list[str]:
+        return self.get_item_all_named_indexes(self.icl_name)
+
+    def get_all_indexes(self) -> list[int]:
+        return self.get_item_all_indexes(self.icl_name)
+
+    def get_vector_size(self) -> int:
+        return len(self.get_all_indexes())
+        
+    def check(self):
+        pass
+
 
 class IclScanMux(IclItem):
     
     def __init__(self, instance: IclInstance, ctx, scan_mux: IclSignal, scan_select: ConcatSig, mux_selects: list[tuple[list[IclNumber],ConcatSig]]) -> None:
-        super().__init__(scan_mux.get_name(), instance.get_hier(), instance.get_module_scope(), ctx)
-        self.instance = instance
+        super().__init__(instance, scan_mux.get_name(), instance.get_hier(), instance.get_module_scope(), ctx)
         self.scan_mux = scan_mux
         self.scan_select = scan_select
         self.mux_selects = mux_selects
@@ -1324,13 +1388,126 @@ class IclScanMux(IclItem):
             self.connections += (list(zip(tos_names, scan_mux_names, [selectee_list_expr_smt], [selectee_list_expr_py])))
 
 
+class IclDataMux(IclItem):
+    
+    def __init__(self, instance: IclInstance, ctx, scan_mux: IclSignal, scan_select: ConcatSig, mux_selects: list[tuple[list[IclNumber],ConcatSig]]) -> None:
+        super().__init__(instance, scan_mux.get_name(), instance.get_hier(), instance.get_module_scope(), ctx)
+        self.scan_mux = scan_mux
+        self.scan_select = scan_select
+        self.mux_selects = mux_selects
+        self.connections = []
+
+    def get_all_named_indexes(self) -> list[str]:
+        return self.get_item_all_named_indexes(self.scan_mux)
+
+    def get_all_indexes(self) -> list[int]:
+        return self.get_item_all_indexes(self.scan_mux)
+    
+    def get_all_connections(self) -> list[tuple[str]]:
+        return self.connections
+    
+    def get_vector_size(self) -> int:
+        return len(self.get_all_indexes())
+        
+    def check(self):
+        self.scan_select.check()
+        scan_sel_size = self.scan_select.get_vector_min_size()
+        scan_sel_names = self.scan_select.get_all_named_indexes(scan_sel_size)
+
+        scan_mux_names = self.get_all_named_indexes()
+        scan_mux_size = 1 if self.scan_mux.get_size() == 0 else self.scan_mux.get_size()
+
+        for selectee_list, tos in self.mux_selects:
+            selectee_size = selectee_list[0].get_icl_size()
+            for selectee_expr_smt in selectee_list:
+                assert(type(selectee_expr_smt) == IclNumber)
+                assert(selectee_list[0].get_icl_size() == selectee_size)
+            assert(selectee_size == scan_sel_size)
+
+            tos.check()      
+            to_size = tos.get_vector_min_size()
+            assert(scan_mux_size == to_size)
+
+            tos_names = tos.get_all_named_indexes(scan_mux_size)
+
+            selectee_list_expr_smt = []
+            selectee_list_expr_py = []
+            for selectee in selectee_list:
+                selectee_expr_smt = []
+                selectee_expr_py = []
+                for idx, scan_sel_bit in enumerate(scan_sel_names):
+                    pass
+                    scan_sel_bit = scan_sel_bit.replace('.', '_')
+                    print(selectee.get_bit(idx).get_number())
+                    if(selectee.get_bit(idx).get_number()):
+                        selectee_expr_smt.append(scan_sel_bit)
+                        selectee_expr_py.append(scan_sel_bit)
+                    else:
+                        selectee_expr_smt.append("(not {})".format(scan_sel_bit))
+                        selectee_expr_py.append("Not({})".format(scan_sel_bit))
+                selectee_expr_smt = "(and {})".format(" ".join(selectee_expr_smt))
+                selectee_expr_py = "And({})".format(",".join(selectee_expr_py))
+
+                selectee_list_expr_smt.append(selectee_expr_smt)
+                selectee_list_expr_py.append(selectee_expr_py)
+            selectee_list_expr_smt = "(or {})".format(" ".join(selectee_list_expr_smt))
+            selectee_list_expr_py = "Or({})".format(",".join(selectee_list_expr_py))
+
+            self.connections += (list(zip(tos_names, scan_mux_names, [selectee_list_expr_smt], [selectee_list_expr_py])))
+
+class IclScanInterface(IclItem):
+
+    def __init__(
+            self,
+            instance: IclInstance,
+            icl_name: str,
+            icl_attributes: list[IclAttribute],
+            interface_ports: list[IclSignal],
+            scan_chains: list[dict],
+            ctx: str
+        ) -> None:
+
+        super().__init__(instance, icl_name, instance.get_hier(), instance.get_hier(), ctx)
+        self.icl_name: str = icl_name
+    
+        self.attributes: list[IclAttribute] = icl_attributes
+        self.interface_ports: list[IclSignal] = interface_ports
+        self.chains: list[dict] = scan_chains
+
+        # Types: host_tap, client_tap, host_scan_interface, client_scan_interface
+        self.interface_type = None 
+
+    def check(self):
+        for port in self.interface_ports:
+            icl_port = self.instance.get_icl_item_name(port.get_name())
+            icl_port_type = type(icl_port)
+            if(icl_port_type == IclTmsPort):
+                self.interface_type = "client_tap"
+                break
+            elif(icl_port_type == IclToTmsPort):
+                self.interface_type = "host_tap"
+                break
+            elif(icl_port_type == IclShiftEnable):
+                self.interface_type = "client_scan_interface"
+                break
+            elif(icl_port_type == IclToShiftEnable):
+                self.interface_type = "host_scan_interface"
+                break
+        assert(icl_port_type != None)
+
+        if(self.interface_type == "client_scan_interface"):
+            icl_port = self.instance.get_icl_item_name(port.get_name())
+            icl_port_type = type(icl_port)
+            assert(icl_port_type in [IclScanInPort, IclScanOutPort, IclShiftEnable, IclSelectPort, IclCaptureEnable, IclUpdateEnable, IclResetPort, IclTckPort])
+            
+        input("IclScanInterface")
+
 class IclPort(IclItem):
 
     def __init__(self, instance: IclInstance, ctx, port: IclSignal, attributes: list[IclAttribute] = None) -> None:
-        super().__init__(port.get_name(), instance.get_hier(), instance.get_module_scope(), ctx)
+        super().__init__(instance, port.get_name(), instance.get_hier(), instance.get_module_scope(), ctx)
         self.ports: list[IclSignal] = [port]
         self.attributes: dict[IclSignal:list[IclAttribute]] = {port:attributes}
-        self.instace: IclInstance = instance
         
     def get_attributes(self, index: int = None)-> list[IclAttribute]:
         if index is not None:
@@ -1343,9 +1520,6 @@ class IclPort(IclItem):
             for port, attribute_list in self.attributes.items():        
                 all_atttributes.extend(attribute_list)     
             return all_atttributes
-
-    def get_instance(self) -> IclInstance:
-        return self.instace
     
     def get_vector_size(self) -> int:
         vector_size = 0
@@ -1417,6 +1591,9 @@ class IclPort(IclItem):
                 raise ValueError(f"Attribute {att} aready in {self.attributes}")           
             self.attributes.append(att)
 
+    def has_port_source(self) -> bool: 
+        return 0
+
 class AddPortSource():
     def add_source(self, port: IclSignal, source: ConcatSig) -> None:
         self.sources: dict[IclSignal:ConcatSig] = {port:source}
@@ -1432,9 +1609,13 @@ class AddPortSource():
 
     def get_named_sourced_indexes(self) -> list[str]:
         name_source_indexes:list[str] = []
+        
         for port, source in self.sources.items():
+            if(not source):
+                continue
             size = len(self.get_item_all_indexes([port]))
             name_source_indexes.extend(source.get_all_named_indexes(size))
+
         return name_source_indexes
 
     def source_merge(self, item_source: "AddPortSource"):
@@ -1442,6 +1623,9 @@ class AddPortSource():
             if port in self.sources:
                 raise ValueError(f"Source is already defined for {port}")
             self.sources[port] = source
+            
+    def has_port_source(self) -> bool: 
+        return len(self.get_named_sourced_indexes()) > 0
 
 class AddPortEnable():
     def add_enable(self, port: IclSignal, enable: IclSignal) -> None:
@@ -1507,7 +1691,7 @@ class AddPolarity():
         for port in self.polarities.keys():
             polarity: bool = self.polarities[port]
             if polarity is not None:
-                assert(polarity is bool)
+                assert(type(polarity) is bool)
             else:
                 polarity = bool(1)
 
@@ -1516,6 +1700,9 @@ class AddPolarity():
             if port in self.polarities:
                 raise ValueError(f"Polarity is already defined for {port}")
             self.polarities[port] = value
+    
+    def get_polarites(self):
+        return self.polarities
 
 class AddClockSettings():
     def add_clock(self, port: IclSignal, clock_settings: dict) -> None:
@@ -1533,7 +1720,7 @@ class AddClockSettings():
 class IclScanInPort(IclPort):
     pass
 
-class IclScanOutPort(IclPort, AddPortSource, AddPortEnable):
+class IclScanOutPort(AddPortSource, AddPortEnable, IclPort):
 
     def __init__(
             self,
@@ -1559,7 +1746,7 @@ class IclScanOutPort(IclPort, AddPortSource, AddPortEnable):
         self.source_merge(icl_port)
         self.enable_merge(icl_port)
 
-class IclDataInPort(IclPort, AddPortRef, AddPortDefValue):
+class IclDataInPort(AddPortRef, AddPortDefValue, IclPort):
 
     def __init__(
             self,
@@ -1585,7 +1772,7 @@ class IclDataInPort(IclPort, AddPortRef, AddPortDefValue):
         self.def_merge(icl_port)
         self.ref_merge(icl_port)
 
-class IclDataOutPort(IclPort, AddPortSource, AddPortEnable, AddPortRef):
+class IclDataOutPort(AddPortSource, AddPortEnable, AddPortRef, IclPort):
 
     def __init__(
             self,
@@ -1633,7 +1820,7 @@ class IclCaptureEnable(IclPort):
     pass
 
 
-class IclToShiftEnable(IclPort, AddPortSource):
+class IclToShiftEnable(AddPortSource, IclPort):
 
     def __init__(
             self,
@@ -1655,7 +1842,7 @@ class IclToShiftEnable(IclPort, AddPortSource):
         super().merge(icl_port)
         self.source_merge(icl_port)
 
-class IclToUpdateEnable(IclPort, AddPortSource):
+class IclToUpdateEnable(AddPortSource, IclPort):
 
     def __init__(
             self,
@@ -1677,7 +1864,7 @@ class IclToUpdateEnable(IclPort, AddPortSource):
         super().merge(icl_port)
         self.source_merge(icl_port)
 
-class IclToCaptureEnable(IclPort, AddPortSource):
+class IclToCaptureEnable(AddPortSource, IclPort):
 
     def __init__(
             self,
@@ -1702,7 +1889,7 @@ class IclToCaptureEnable(IclPort, AddPortSource):
 class IclSelectPort(IclPort):
     pass
 
-class IclToSelectPort(IclPort, AddPortSource):
+class IclToSelectPort(AddPortSource, IclPort):
 
     def __init__(
             self,
@@ -1724,7 +1911,7 @@ class IclToSelectPort(IclPort, AddPortSource):
         super().merge(icl_port)
         self.source_merge(icl_port)
 
-class IclResetPort(IclPort, AddPolarity):
+class IclResetPort(AddPolarity, IclPort):
 
     def __init__(
             self,
@@ -1746,7 +1933,7 @@ class IclResetPort(IclPort, AddPolarity):
         super().merge(icl_port)
         self.polarity_merge(icl_port)
 
-class IclToResetPort(IclPort, AddPolarity, AddPortSource):
+class IclToResetPort(AddPolarity, AddPortSource, IclPort):
 
     def __init__(
             self,
@@ -1776,7 +1963,7 @@ class IclToResetPort(IclPort, AddPolarity, AddPortSource):
 class IclTmsPort(IclPort):
     pass
 
-class IclToTmsPort(IclPort, AddPortSource):
+class IclToTmsPort(AddPortSource, IclPort):
 
     def __init__(
             self,
@@ -1805,7 +1992,7 @@ class IclToTckPort(IclPort):
     pass
 
 
-class IclClockPort(IclPort, AddClockSettings):
+class IclClockPort(AddClockSettings, IclPort):
     
     def __init__(
             self,
@@ -1817,7 +2004,7 @@ class IclClockPort(IclPort, AddClockSettings):
         ) -> None:
 
         super().__init__(instance, ctx, port, attributes)
-        self.add_clock(clock_settings)
+        self.add_clock(port, clock_settings)
 
     def check(self) -> int:
         super().check()
@@ -1827,7 +2014,7 @@ class IclClockPort(IclPort, AddClockSettings):
         super().merge(icl_port)
         self.clock_merge(icl_port)
 
-class IclToClockPort(IclPort, AddClockSettings, AddPortSource):
+class IclToClockPort(AddClockSettings, AddPortSource, IclPort):
 
     def __init__(
             self,
@@ -1856,7 +2043,7 @@ class IclToClockPort(IclPort, AddClockSettings, AddPortSource):
 class IclTrstPort(IclPort):
     pass
 
-class IclToTrstPort(IclPort, AddPortSource):
+class IclToTrstPort(AddPortSource, IclPort):
 
     def __init__(
             self,
@@ -1878,7 +2065,7 @@ class IclToTrstPort(IclPort, AddPortSource):
         super().merge(icl_port)
         self.source_merge(icl_port)
 
-class IclIrSelectPort(IclPort):
+class IclToIrSelectPort(IclPort):
     pass
 
 class IclAddressPort(IclPort):

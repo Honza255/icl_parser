@@ -443,6 +443,31 @@ def test_3():
     
     #ijtag_reg_model.plotGraph()
 
+def test_4():
+
+    icl_files = [
+        "../nvm_icl/rosc_cut.icl",
+        "../nvm_icl/efuse_cut.icl",
+        "../nvm_icl/ijtag_regs.icl",
+        "../nvm_icl/ijtag_sib.icl",
+        "../nvm_icl/ijtag_tap.icl",
+        "../nvm_icl/ijtag_tdr.icl",
+        "../nvm_icl/nvm_atc_cut.icl",
+        "../nvm_icl/nvm_dma_cut.icl",
+        "../nvm_icl/nvm_wrap.icl",
+        "../nvm_icl/NVMTV07A.icl"
+    ]
+
+    module_name = "NVMTV07A"
+    
+    all_icl_modules = pre_process_icl_files(icl_files)
+    icl_instance = process_icl_module(all_icl_modules, module_name)
+
+    ijtag_reg_model = IclRegisterModel(icl_instance)
+    
+    #ijtag_reg_model.plotGraph()
+
+
     
 if __name__ == '__main__':
     #print(sys.argv)
@@ -451,8 +476,12 @@ if __name__ == '__main__':
     icl_number_test()
 
 
+
     test_1()
     #test_2()    
+
+    test_4()
+    exit()
 
     with Profile() as profile:
         test_2()    

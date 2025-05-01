@@ -1,5 +1,3 @@
-
-
 import matplotlib.pyplot as plt
 import networkx as nx
 
@@ -15,6 +13,18 @@ class IclRegisterModel():
         self.icl_graph = None
         # dict[string: IclRegister]
 
+        self.input_port_types = [
+            IclDataInPort, IclScanInPort, IclShiftEnable,
+            IclCaptureEnable, IclUpdateEnable, IclSelectPort,
+            IclResetPort, IclClockPort, IclTckPort, IclTmsPort,
+            IclTrstPort, IclReadEnPort, IclWriteEnPort, IclAddressPort]
+
+        self.output_port_types = [
+            IclToIrSelectPort, IclDataOutPort, IclScanOutPort,
+            IclToShiftEnable, IclToCaptureEnable, IclToUpdateEnable,
+            IclToSelectPort, IclToResetPort, IclToClockPort, IclToTmsPort,
+            IclToTrstPort, IclToTckPort]
+
         self.retargeter = None
         self.registers = {}
         self.registers_smt = {}
@@ -27,6 +37,111 @@ class IclRegisterModel():
         eval_list = icl_instance.list_instances()
         for item in eval_list:
             print(item)
+
+        for item in eval_list:
+            _, _ = item.popitem()
+            _, instance = item.popitem()
+            
+            # ICL network connection creation
+            for icl_item in instance.icl_items:
+                icl_item: IclItem
+
+                if(type(icl_item) in [IclInstance, IclEnum]):
+                    continue
+
+                #if(type(icl_item) in self.input_port_types):                  
+                #    for drives in icl_item.get_all_named_indexes():
+                #        print(self.get_element_driver(drives),"->",  drives)
+                #        
+                #if(type(icl_item) in self.output_port_types):                  
+                #    for recieving_connection in icl_item.get_all_named_indexes():
+                #        print(self.get_element_driver(recieving_connection),"->",  recieving_connection)
+                #
+                #if(type(icl_item) in [IclScanRegister]):                  
+                #    for recieving_connection in icl_item.get_all_named_indexes():
+                #        print(self.get_element_driver(recieving_connection),"->",  recieving_connection)
+                #
+                if(type(icl_item) in [IclScanMux]):                  
+                    for recieving_connection in icl_item.get_all_named_indexes():
+                        print(self.get_element_driver(recieving_connection),"->",  recieving_connection)
+
+    def remove_trailing_numbers(self, s):
+        return re.sub(r'_\d+$', '', s)
+
+    def get_element_driver(self, name:str) -> str:
+        icl_item: IclItem = self.icl_instance.get_icl_item_name(self.remove_trailing_numbers(name))
+        icl_item_size = len(icl_item.get_all_indexes())
+        icl_item_short_name = icl_item.get_name()
+       
+        assert(name in icl_item.get_all_named_indexes())
+        name_idx: int = icl_item.get_all_named_indexes().index(name)
+
+        source_connection: str = None
+        
+        if(type(icl_item) in self.output_port_types):                             
+            if(icl_item.has_port_source()):
+                assert(len(icl_item.get_named_sourced_indexes()) == len(icl_item.get_all_indexes()))
+                source_connection = icl_item.get_named_sourced_indexes()[name_idx]
+               
+        if(type(icl_item) in [IclScanRegister]):
+            if(icl_item.get_named_msb() == name):
+                source_connection = icl_item.get_scanin_named_index()
+            else:
+                source_connection = icl_item.get_all_named_indexes()[name_idx-1]
+
+        if(type(icl_item) in [IclScanMux]):                             
+            source_connection: str = ""
+            for mux_in, mux_out, expr_smt, expr_py in icl_item.get_all_connections():
+                source_connection = f"{mux_in} {source_connection}"
+        
+        if(type(icl_item) in [IclDataRegister]):                             
+            assert(0)
+
+        if(type(icl_item) in [IclDataMux]):
+            source_connection: str = ""
+            for mux_in, mux_out, expr_smt, expr_py in icl_item.get_all_connections():
+                source_connection = f"{mux_in} {source_connection}"
+            
+        if(type(icl_item) in self.input_port_types):
+            connections: list[dict[IclSignal, ConcatSig]] = icl_item.get_instance().connections
+            input_connection: ConcatSig = None
+
+            for connection in connections:
+                connect_to: IclSignal = list(connection.keys())[0]
+                input_connection: ConcatSig = list(connection.values())[0]
+
+                conn_name = connect_to.get_name()
+                unsized = (connect_to.get_size() == 0)
+
+                if(conn_name == icl_item_short_name):
+
+                    if(unsized):
+                        connect_to_size = icl_item_size
+                    else:
+                        connect_to_size = connect_to.get_size()
+                    input_connection.check_fit(connect_to_size)
+
+                    init_pol = 0
+                    if((type(icl_item) == IclResetPort) or (type(icl_item) == IclToResetPort)):
+                        init_pol = 1 
+                    
+                    if(unsized):
+                        input_connection = input_connection.get_all_named_indexes_with_prefix(max_size=icl_item_size, neg_on=init_pol)
+                    else:
+                        input_connection.resize(connect_to.get_size())
+                        input_connection = input_connection.get_all_named_indexes_with_prefix(max_size=connect_to.get_size(), neg_on=init_pol)
+        
+                    input_connection = input_connection[name_idx]                   
+                    break
+                else:
+                    input_connection = None
+            source_connection = input_connection
+
+        return source_connection
+                        
+
+
+        return
 
         for item in eval_list:
             _, _ = item.popitem()

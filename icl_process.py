@@ -267,7 +267,8 @@ class IclProcess(iclListener):
     def exitData_signal(self, ctx:iclParser.Data_signalContext):
         operator = ctx.getChild(0).getText()  
         if(operator == "~"):
-            self.result[ctx] = [~item for item in self.result[ctx.signal()]]
+            self.result[ctx] = self.result[ctx.signal()]
+            self.result[ctx].negate() 
         else:
             self.result[ctx] = self.result[ctx.signal()]
         print("exitData_signal-X", ctx.getText(), "->", self.result[ctx])
@@ -300,7 +301,6 @@ class IclProcess(iclListener):
     def exitConcat_updateEn_signal(self, ctx): self.exitConcat_data_signal(ctx, "updateen")        
     def exitConcat_tms_signal(self, ctx): self.exitConcat_data_signal(ctx, "tms")        
     def exitConcat_trst_signal(self, ctx): self.exitConcat_data_signal(ctx, "trst")        
-
 
     def exitSize(self, ctx:iclParser.SizeContext):
         if(ctx.pos_int()):
@@ -462,13 +462,19 @@ class IclProcess(iclListener):
 
     def enterParameter_ref(self, ctx:iclParser.Parameter_refContext):
         parameter_name = ctx.SCALAR_ID().getText()
-        print(self.start_icl_module["parameters"][parameter_name])
+
         if(self.icl_instance.get_parameter_override(parameter_name)):
             self.record[ctx] = self.icl_instance.get_parameter_override(parameter_name)
         elif(self.icl_instance.get_parameter(parameter_name)):
             self.record[ctx] = self.icl_instance.get_parameter(parameter_name)
         else:
-            lexer = iclLexer(InputStream(self.start_icl_module["parameters"][parameter_name]))
+            if(parameter_name in self.start_icl_module["parameters"]):
+                lexer = iclLexer(InputStream(self.start_icl_module["parameters"][parameter_name]))
+            elif (parameter_name in self.start_icl_module["local_parameters"]):
+                lexer = iclLexer(InputStream(self.start_icl_module["local_parameters"][parameter_name]))
+            else:
+                raise ValueError(f"Reference to parameter {parameter_name} not found, in ICL module {self.icl_instance.get_name()}")
+
             stream = CommonTokenStream(lexer)
             parser = iclParser(stream)
             tree = parser.module_item()
@@ -483,17 +489,8 @@ class IclProcess(iclListener):
 
 
 
-    # dataRegister_def : 'DataRegister' dataRegister_name (';' | ( '{' dataRegister_item+ '}' ) ) ;   
-    def exitDataRegister_def(self, ctx:iclParser.DataRegister_defContext):
-        icl_name: IclSignal = self.result[ctx.dataRegister_name()]
-        icl_data_register = IclDataRegister(self.icl_instance, icl_name, ctx.getText())
-        self.icl_instance.add_icl_item(icl_data_register)
-        print("exitDataRegister_def-X", ctx.getText(), "->", icl_data_register)
-
+    # dataRegister_def : 'DataRegister' dataRegister_name (';' | ( '{' dataRegister_item+ '}' ) ) ;
     # dataRegister_name : register_name ;
-    def exitDataRegister_name(self, ctx:iclParser.DataRegister_nameContext):
-        self.result[ctx] = self.result[ctx.register_name()]
-
     # dataRegister_item : dataRegister_type |
     #                     dataRegister_common ;
     # dataRegister_type : dataRegister_selectable |
@@ -528,9 +525,14 @@ class IclProcess(iclListener):
     #            '<R>' |
     #             number |
     #             STRING |
-    #             parameter_ref ;
-        
+    #             parameter_ref ;   
+    def exitDataRegister_def(self, ctx:iclParser.DataRegister_defContext):
+        icl_range_item: IclSignal = self.result[ctx.dataRegister_name().register_name()]
+        icl_data_register = IclDataRegister(self.icl_instance, icl_range_item, ctx.getText())
 
+        self.icl_instance.add_icl_item(icl_data_register)
+
+        print("exitDataRegister_def-X", ctx.getText(), "->", icl_data_register)
 
 
     # scanRegister_def : 'ScanRegister' scanRegister_name (';' |
@@ -627,11 +629,29 @@ class IclProcess(iclListener):
             selectee = self.result[item.concat_scan_signal()]
             mux_selects.append(tuple((selector_list, selectee)))
                    
-        new_icl_item = IclScanMux(self.icl_instance, ctx.getText(), scan_mux,scan_select, mux_selects)
+        new_icl_item = IclScanMux(self.icl_instance, ctx.getText(), scan_mux, scan_select, mux_selects)
         self.icl_instance.add_icl_item(new_icl_item)
 
         print("exitScanMux_def-X", ctx.getText(), "->", new_icl_item)
 
+    # dataMux_def : 'DataMux' dataMux_name 'SelectedBy' dataMux_select '{' dataMux_selection+ '}' ;
+    # dataMux_name : reg_port_signal_id ;
+    # dataMux_select : concat_data_signal ;
+    # dataMux_selection : concat_number_list':' concat_data_signal ';' ;
+    def exitDataMux_def(self, ctx:iclParser.DataMux_defContext):
+        data_mux = self.result[ctx.dataMux_name().reg_port_signal_id()]
+        data_select = self.result[ctx.dataMux_select().concat_data_signal()] 
+        
+        mux_selects = []
+        for item in ctx.dataMux_selection():
+            selector_list = self.result[item.concat_number_list()]
+            selectee = self.result[item.concat_data_signal()]
+            mux_selects.append(tuple((selector_list, selectee)))
+                   
+        new_icl_item = IclDataMux(self.icl_instance, ctx.getText(), data_mux, data_select, mux_selects)
+        self.icl_instance.add_icl_item(new_icl_item)
+
+        print("exitDataMux_def-X", ctx.getText(), "->", new_icl_item)
 
 
     # instance_def : 'Instance' instance_name 'Of' (namespace_name? '::')?
@@ -684,8 +704,10 @@ class IclProcess(iclListener):
             if isinstance(child, iclParser.Instance_itemContext):
 
                 if(child.inputPort_connection()):
-                    port_name  = self.result[child.inputPort_connection().inputPort_name().port_name()]
-                    port_paths = self.result[child.inputPort_connection().inputPort_source().getChild(0)]                  
+                    port_name: IclSignal  = self.result[child.inputPort_connection().inputPort_name().port_name()]
+                    port_paths: ConcatSig = self.result[child.inputPort_connection().inputPort_source().getChild(0)]
+                    port_paths.set_type("unknown")
+
                     connection = {port_name: port_paths}
                     icl_eval_lis.icl_instance.add_connection(connection)                  
                     input_ports.append((port_name, port_paths))
@@ -918,6 +940,7 @@ class IclProcess(iclListener):
                 if (item.toUpdateEnPort_source()):
                     if not source:
                         source = self.result[item.toUpdateEnPort_source().updateEn_signal()]
+                        source = ConcatSig(self.icl_instance, [source], "updateen")
                     else:
                         raise ValueError(f"More than one source' {ctx.getText()}")
                     
@@ -936,6 +959,7 @@ class IclProcess(iclListener):
                 if item.toCaptureEnPort_source():
                     if not source:
                         source = self.result[item.toCaptureEnPort_source().captureEn_signal()]
+                        source = ConcatSig(self.icl_instance, [source], "to_capture_en")
                     else:
                         raise ValueError(f"More than one source' {ctx.getText()}")      
                     
@@ -978,8 +1002,8 @@ class IclProcess(iclListener):
 
             for item in new_ctx.resetPort_item():
                 if item.resetPort_polarity():
-                    if not default_value:
-                        polarity = bool(int(item.resetPort_polarity().getChild(1)))
+                    if not polarity:
+                        polarity = bool(int(item.resetPort_polarity().getChild(1).getText()))
                     else:
                         raise ValueError(f"More than one polarity' {ctx.getText()}")
                     
@@ -998,13 +1022,13 @@ class IclProcess(iclListener):
 
             for item in new_ctx.toResetPort_item():
                 if item.toResetPort_polarity():
-                    if not default_value:
-                        polarity = bool(int(item.toResetPort_polarity().getChild(1)))
+                    if not polarity:
+                        polarity = bool(int(item.toResetPort_polarity().getChild(1).getText()))
                     else:
                         raise ValueError(f"More than one polarity' {ctx.getText()}")
                 elif item.toResetPort_source():
                     if not source:
-                        source = self.result[item.toResetPort_source()]
+                        source = self.result[item.toResetPort_source().concat_reset_signal()]
                     else:
                         raise ValueError(f"More than one source' {ctx.getText()}")
                     
@@ -1174,8 +1198,8 @@ class IclProcess(iclListener):
         # toIRSelectPort_name : port_name ;
         elif ctx.toIRSelectPort_def():   
             new_ctx: iclParser.ToIRSelectPort_defContext = ctx.toIRSelectPort_def()
-            port = self.result[new_ctx.ToIRSelectPort().port_name()]
-            icl_item = IclIrSelectPort(self.icl_instance, ctx.getText(), port, attributes)
+            port = self.result[new_ctx.toIRSelectPort_name().port_name()]
+            icl_item = IclToIrSelectPort(self.icl_instance, ctx.getText(), port, attributes)
 
         # addressPort_def : 'AddressPort' addressPort_name (';' | ( '{' attribute_def*'}' ) ) ;
         # addressPort_name : port_name ;
@@ -1215,6 +1239,141 @@ class IclProcess(iclListener):
                 self.icl_instance.add_icl_item(icl_item)
 
             print(f"exit port {ctx.getChild(0).getText()} -> {icl_item, port_name, attributes}")      
+
+    # scanInterface_def : 'ScanInterface' scanInterface_name '{' scanInterface_item+ '}' ;
+    # scanInterface_name : SCALAR_ID;
+    # scanInterface_item : attribute_def |
+    #                     scanInterfacePort_def |
+    #                     defaultLoad_def |
+    #                     scanInterfaceChain_def ;
+    # scanInterfacePort_def : 'Port' reg_port_signal_id ';';
+    # scanInterfaceChain_def : 'Chain' scanInterfaceChain_name '{' scanInterfaceChain_item+ '}' ;
+    # scanInterfaceChain_name : SCALAR_ID;
+    # scanInterfaceChain_item : attribute_def |
+    #                         scanInterfacePort_def |
+    #                         defaultLoad_def ;
+    # defaultLoad_def : 'DefaultLoadValue' concat_number ';' ;
+    def exitScanInterface_def(self, ctx):
+        interface_name = ctx.scanInterface_name().SCALAR_ID().getText()     
+        interface_attributes: list[IclAttribute] = []
+        interface_ports: list[IclSignal] = []
+        chains: list[dict] = []
+
+        has_interface_chain = 0
+
+        for item in ctx.scanInterface_item():
+            if item.scanInterfaceChain_def():
+                chain_name =  self.result[item.scanInterfaceChain_def().scanInterfaceChain_name().SCALAR_ID().getText()]
+
+                has_interface_chain = 1
+
+                new_chain: dict ={
+                    "name": chain_name,
+                    "attr": [],
+                    "ports": [],
+                    "default": None,
+                }
+
+                for chain_item in ctx.scanInterfaceChain_item():
+                    if chain_item.attribute_def():
+                        attribute_def = self.result[item.attribute_def()]
+                        new_chain["attr"].append(attribute_def)
+
+                    elif chain_item.defaultLoad_def():
+                        if(new_chain["default"]):
+                            raise ValueError(f"More than two default values: {ctx.getText()}")
+                        new_chain["default"] = self.result[item.defaultLoad_def().concat_number()]  
+
+                    elif chain_item.scanInterfacePort_def():
+                        port:IclSignal = self.result[item.scanInterfacePort_def().reg_port_signal_id()]
+                        new_chain["ports"].append(port)
+                        if(len(new_chain["ports"]) > 2):
+                            raise ValueError(f"More than two ports in chain: {ctx.getText()}")
+                    else:
+                        raise ValueError(f"Non valid state")
+
+                chains.append(new_chain)
+
+
+        for item in ctx.scanInterface_item():
+            if item.attribute_def():
+                attribute_def = self.result[item.attribute_def()]
+                interface_attributes.append(attribute_def)  
+            elif item.scanInterfacePort_def():
+                port:IclSignal = self.result[item.scanInterfacePort_def().reg_port_signal_id()]
+                interface_ports.append(port)
+            elif item.defaultLoad_def():
+                new_chain: dict ={
+                    "name": "!unamed!",
+                    "attr": [],
+                    "ports": [],
+                    "default": None,
+                }   
+
+                if has_interface_chain:
+                    raise ValueError(f"DefaultLoad can not be specified when scanInterfaceChain is in scan interface: {ctx.getText()}")
+                else:
+                    if(chains):
+                        raise ValueError(f"More than two default values: {ctx.getText()}")
+                    else:                                  
+                        new_chain["default"] = self.result[item.defaultLoad_def().concat_number()]
+                        chains.append(new_chain)
+            elif item.scanInterfaceChain_def():
+                pass
+            else:
+                raise ValueError(f"Non valid state")
+      
+        scan_interface = IclScanInterface(self.icl_instance, interface_name, interface_attributes, interface_ports, chains, ctx.getText())
+        input("ADD")
+        self.icl_instance.add_icl_item(scan_interface)
+
+        print("exitScanInterface_def", ctx.getText(), "->", scan_interface)
+
+
+    # oneHotScanGroup_def : 'OneHotScanGroup' oneHotScanGroup_name '{' oneHotScanGroup_item+ '}' ;
+    # oneHotScanGroup_name : reg_port_signal_id ;
+    # oneHotScanGroup_item : 'Port' concat_scan_signal ';' ;
+    def exitOneHotScanGroup_def(self, ctx:iclParser.OneHotScanGroup_defContext):
+        icl_sig: IclSignal = self.result[ctx.oneHotScanGroup_name().reg_port_signal_id()]
+        selectee : list[ConcatSig] = []
+
+        for item in ctx.oneHotScanGroup_item():
+            if item.concat_scan_signal():
+                selectee.append(self.result[item.concat_scan_signal()])
+            else:
+                raise ValueError(f"Non valid state")
+            
+        hot_scan = IclOneHotScanGroup(self.icl_instance, icl_sig, selectee, ctx.getText())
+        self.icl_instance.add_icl_item(hot_scan)
+
+        print("exitOneHotDataGroup_def-X", ctx.getText(), "->", hot_scan)
+
+
+    # oneHotDataGroup_def : 'OneHotDataGroup' oneHotDataGroup_name '{' oneHotDataGroup_item+ '}' ;
+    # oneHotDataGroup_name : reg_port_signal_id ;
+    # oneHotDataGroup_item : instance_def |
+    #                     dataRegister_def |
+    #                     oneHotDataGroup_portSource ;
+    # oneHotDataGroup_portSource : 'Port' concat_data_signal ';' ;
+    def exitOneHotDataGroup_def(self, ctx:iclParser.OneHotDataGroup_defContext):
+        icl_sig: IclSignal = self.result[ctx.oneHotDataGroup_name().reg_port_signal_id()]
+        selectee : list = []
+
+        for item in ctx.oneHotDataGroup_item():
+            if item.instance_def():
+                pass # TODO
+            elif item.dataRegister_def():
+                pass # TODO
+            elif item.oneHotDataGroup_portSource():
+                pass # TODO
+            else:
+                raise ValueError(f"Non valid state")
+
+        hot_scan = IclOneHotDataGroup(self.icl_instance, icl_sig, selectee, ctx.getText())
+        self.icl_instance.add_icl_item(hot_scan)
+
+        print("exitOneHotDataGroup_def-X", ctx.getText(), "->", hot_scan)
+
 
     # attribute_def : 'Attribute' attribute_name ('=' attribute_value )? ';' ;
     # attribute_name : SCALAR_ID;

@@ -1,4 +1,4 @@
-# Shitty IJTAG ICL Parser to Scan Graph
+# Poor IJTAG ICL Parser to Scan Graph
 
 This tool attempts to create a scan graph from an ICL file. 
 (Note: Work may still be in progress)
@@ -22,10 +22,10 @@ This tool attempts to create a scan graph from an ICL file.
 
 
 ## Useful Paper Links
-- [IJTAG Standard (IEEE 1687-2014)](https://ieeexplore.ieee.org/document/6974961) (or access via sci-hub)
+- [IJTAG Standard (IEEE 1687-2014)](https://ieeexplore.ieee.org/document/6974961)
 - [Reconfigurable Scan Networks: Formal Verification, Access Optimization, and Protection](http://dx.doi.org/10.18419/opus-3246)
-- [Analysis and Design of an On-Chip Retargeting Engine for IEEE 1687 Networks](https://ieeexplore.ieee.org/document/7519301) (or access via sci-hub)
-- [Structured Scan Patterns Retargeting for Dynamic Instruments Access](https://ieeexplore.ieee.org/document/7928955) (or access via sci-hub)
+- [Analysis and Design of an On-Chip Retargeting Engine for IEEE 1687 Networks](https://ieeexplore.ieee.org/document/7519301)
+- [Structured Scan Patterns Retargeting for Dynamic Instruments Access](https://ieeexplore.ieee.org/document/7928955)
 - [Analysis and Design of a Dependability Manager for Self-Aware System-on-Chips](https://essay.utwente.nl/76229/1/Geerlings_MA_CAES-TDT.pdf)
 - [A Suite of IEEE 1687 Benchmark Networks](https://ieeexplore.ieee.org/document/7805840)
 
@@ -36,3 +36,4 @@ This tool attempts to create a scan graph from an ICL file.
 - [Structured Retargeting](https://github.com/abraralaa92/structured_retargeting)
 - [Adaptive Retargeting](https://github.com/abraralaa92/adaptive_retargeting)
 - [Structural SAT Retargeting](https://github.com/abraralaa92/Structural_SAT_Retargeting)
+- [mast-opensource](https://gricad-gitlab.univ-grenoble-alpes.fr/portolam/mast-opensource)
