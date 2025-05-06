@@ -49,10 +49,11 @@ class IclRegisterModel():
                 if(type(icl_item) in [IclInstance, IclEnum]):
                     continue
 
-                #if(type(icl_item) in self.input_port_types):                  
-                #    for drives in icl_item.get_all_named_indexes():
-                #        print(self.get_element_driver(drives),"->",  drives)
-                #        
+                if(type(icl_item) in self.input_port_types):                  
+                    for drives in icl_item.get_all_named_indexes():
+                        print(self.get_element_driver(drives),"->",  drives)
+                        print(self.get_main_expression(drives),"->", drives)
+
                 #if(type(icl_item) in self.output_port_types):                  
                 #    for recieving_connection in icl_item.get_all_named_indexes():
                 #        print(self.get_element_driver(recieving_connection),"->",  recieving_connection)
@@ -63,11 +64,88 @@ class IclRegisterModel():
                 #
                 if(type(icl_item) in [IclScanMux]):                  
                     for recieving_connection in icl_item.get_all_named_indexes():
-                        print(self.get_element_driver(recieving_connection),"->",  recieving_connection)
+                        #print(self.get_element_driver(recieving_connection),"->",  recieving_connection)
+                        print(self.get_expression(recieving_connection),"->",  recieving_connection)
+
+                #if(type(icl_item) in [IclLogicSignal]):                  
+                #    for recieving_connection in icl_item.get_all_named_indexes():
+                #        print(self.get_element_driver(recieving_connection),"->",  recieving_connection)
+        print("END")
+        print(self.get_main_expression("u_regs_nvm_atc_cut_10.select_0000"),"-> u_regs_nvm_atc_cut_10.select_0000")
+        print(self.get_main_expression("u_tdr_bypass.select_0000"),"-> u_tdr_bypass.select_0000")
+        print(self.get_main_expression("u_nvm_atc_cut_10.wdata_0068"),"-> u_nvm_atc_cut_10.wdata_0068")
+        print(self.get_main_expression("u_nvm_atc_cut_10.rst_n_0000"),"-> u_nvm_atc_cut_10.rst_n_0000")
+
+    def get_main_expression(self, start_name:str) -> str:
+        start = self.get_expression(start_name)
+        tmp: str = start
+
+        while True:
+            replace: list[tuple[str,str]] = []
+
+            names = self.extract_names(tmp)
+            names = list(set(names))
+
+            for name in names:
+                if(name == "Implicit_0000"):
+                    continue
+                
+                if(self.is_it_top_input(name)):
+                    continue
+
+                icl_item: IclItem = self.icl_instance.get_icl_item_name(self.remove_trailing_numbers(name))
+                if(type(icl_item) in [IclScanRegister, IclDataRegister]):
+                    continue
+
+                expr = self.get_expression(name)
+                replace.append((name, expr))
+
+            if(len(replace) == 0):
+                break
+
+            for name, expr in replace:
+                tmp = tmp.replace(name, expr)
+        return tmp
+    
+    # Extract names
+    # From: "(and u_tap.ir_0004 u_tap.ir_0003 u_tap.ir_0002 u_tap.ir_0001 (not u_tap.ir_0000) ab_0050)"
+    # To ["u_tap.ir_0004", "u_tap.ir_0003", "u_tap.ir_0002", "u_tap.ir_0001", "u_tap.ir_0000", "ab_0050"]
+    def extract_names(self, expression: str) -> list[str]:
+        # Use regex to find all variable names in the expression
+        # Match words that start with a letter or underscore and may contain alphanumeric characters or underscores
+        return re.findall(r'[a-zA-Z_.0-9]+_[0-9]{4,}', expression)
 
     def remove_trailing_numbers(self, s):
         return re.sub(r'_\d+$', '', s)
 
+    def is_it_top_input(self, name:str) -> bool:
+        tmp:bool = False
+        if(name.find(".") == -1):
+            icl_item: IclItem = self.icl_instance.get_icl_item_name(self.remove_trailing_numbers(name))
+            if(type(icl_item) in self.input_port_types):
+                tmp = True
+        return tmp
+
+    def get_expression(self, name:str) -> str:
+        icl_item: IclItem = self.icl_instance.get_icl_item_name(self.remove_trailing_numbers(name))
+        expression: str = ""
+
+        if(type(icl_item) in [IclLogicSignal]):                  
+            expression = icl_item.processed_expression
+
+        elif(type(icl_item) in [IclScanMux]):
+            for mux_in, mux_out, expr_smt, expr_py in icl_item.get_all_connections():
+                if(name == mux_out):
+                    expression = f"(And {mux_in} {expr_smt}) {expression}"
+            expression = f"(Or {expression})"	
+
+        else:
+            get_element_driver: list[str] = self.get_element_driver(name)
+            expression = get_element_driver
+
+        return expression
+    
+    
     def get_element_driver(self, name:str) -> str:
         icl_item: IclItem = self.icl_instance.get_icl_item_name(self.remove_trailing_numbers(name))
         icl_item_size = len(icl_item.get_all_indexes())
@@ -92,10 +170,14 @@ class IclRegisterModel():
         if(type(icl_item) in [IclScanMux]):                             
             source_connection: str = ""
             for mux_in, mux_out, expr_smt, expr_py in icl_item.get_all_connections():
-                source_connection = f"{mux_in} {source_connection}"
+                if(name == mux_out):
+                    source_connection = f"{mux_in} {source_connection}"
         
         if(type(icl_item) in [IclDataRegister]):                             
             assert(0)
+
+        if(type(icl_item) in [IclLogicSignal]):                             
+            source_connection = " ".join(self.extract_names(icl_item.processed_expression))
 
         if(type(icl_item) in [IclDataMux]):
             source_connection: str = ""
@@ -136,6 +218,9 @@ class IclRegisterModel():
                 else:
                     input_connection = None
             source_connection = input_connection
+
+        if(source_connection == None):
+            source_connection = "Implicit_0000"
 
         return source_connection
                         

@@ -997,6 +997,7 @@ class IclLogicSignal(IclItem):
         super().__init__(instance, icl_name.get_name(), instance.get_hier(), instance.get_hier(), ctx)
         self.icl_name: IclSignal = icl_name
         self.expression: list = expression
+        self.processed_expression = None
 
         # If ICL signal name is unsized
         if self.icl_name.get_size() == 0:
@@ -1240,10 +1241,10 @@ class IclLogicSignal(IclItem):
         print(self.expression)
         print('do expression')
 
-        a = self.do_expr_2(self.expression)
-
+        self.processed_expression = self.do_expr_2(self.expression)[0]
+        a = self.processed_expression 
         print(self.ctx)
-        print(a)
+        print(self.processed_expression)
 
         #input()
 
@@ -1369,7 +1370,7 @@ class IclScanMux(IclItem):
                 selectee_expr_py = []
                 for idx, scan_sel_bit in enumerate(scan_sel_names):
                     pass
-                    scan_sel_bit = scan_sel_bit.replace('.', '_')
+                    #scan_sel_bit = scan_sel_bit.replace('.', '_')
                     print(selectee.get_bit(idx).get_number())
                     if(selectee.get_bit(idx).get_number()):
                         selectee_expr_smt.append(scan_sel_bit)

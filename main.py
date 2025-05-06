@@ -2,6 +2,7 @@
 
 import sys
 import time
+from pathlib import Path
 
 from typing import Any
 
@@ -445,20 +446,10 @@ def test_3():
 
 def test_4():
 
-    icl_files = [
-        "../nvm_icl/rosc_cut.icl",
-        "../nvm_icl/efuse_cut.icl",
-        "../nvm_icl/ijtag_regs.icl",
-        "../nvm_icl/ijtag_sib.icl",
-        "../nvm_icl/ijtag_tap.icl",
-        "../nvm_icl/ijtag_tdr.icl",
-        "../nvm_icl/nvm_atc_cut.icl",
-        "../nvm_icl/nvm_dma_cut.icl",
-        "../nvm_icl/nvm_wrap.icl",
-        "../nvm_icl/NVMTV07A.icl"
-    ]
+    folder_path = Path("../test_icl")
+    icl_files = [str(file.resolve()) for file in folder_path.glob("*.icl")]
 
-    module_name = "NVMTV07A"
+    module_name = "test_test"
     
     all_icl_modules = pre_process_icl_files(icl_files)
     icl_instance = process_icl_module(all_icl_modules, module_name)
