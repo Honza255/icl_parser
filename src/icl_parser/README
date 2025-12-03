@@ -1,0 +1,2 @@
+How to create python parser from .g4 file:
+    antlr4 -Dlanguage=Python3 icl.g4

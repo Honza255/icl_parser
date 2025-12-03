@@ -59,16 +59,16 @@ shiftEn_signal : signal ;
 captureEn_signal : signal ;
 updateEn_signal : signal ;
 
-concat_reset_signal : (reset_signal | data_signal) ( ',' reset_signal | data_signal )*;
-concat_scan_signal : (scan_signal | data_signal) ( ',' scan_signal | data_signal )*;
+concat_reset_signal : (reset_signal | data_signal) ( ',' (reset_signal | data_signal) )*;
+concat_scan_signal : (scan_signal | data_signal) ( ',' (scan_signal | data_signal) )*;
 concat_data_signal : data_signal ( ',' data_signal)*;
-concat_clock_signal : (clock_signal | data_signal)  ( ',' clock_signal | data_signal)*;
-concat_tck_signal : (tck_signal | data_signal) ( ',' tck_signal | data_signal)*;
-concat_shiftEn_signal : (shiftEn_signal | data_signal) ( ',' shiftEn_signal | data_signal)* ;
-concat_captureEn_signal : (captureEn_signal | data_signal) ( ',' captureEn_signal | data_signal )*;
-concat_updateEn_signal : (updateEn_signal | data_signal) ( ',' updateEn_signal | data_signal )*;
-concat_tms_signal : (tms_signal | data_signal) ( ',' tms_signal | data_signal)*;
-concat_trst_signal : (trst_signal | data_signal) ( ',' trst_signal | data_signal )*;
+concat_clock_signal : (clock_signal | data_signal)  ( ',' (clock_signal | data_signal))*;
+concat_tck_signal : (tck_signal | data_signal) ( ',' (tck_signal | data_signal))*;
+concat_shiftEn_signal : (shiftEn_signal | data_signal) ( ',' (shiftEn_signal | data_signal))* ;
+concat_captureEn_signal : (captureEn_signal | data_signal) ( ',' (captureEn_signal | data_signal) )*;
+concat_updateEn_signal : (updateEn_signal | data_signal) ( ',' (updateEn_signal | data_signal) )*;
+concat_tms_signal : (tms_signal | data_signal) ( ',' (tms_signal | data_signal))*;
+concat_trst_signal : (trst_signal | data_signal) ( ',' (trst_signal | data_signal) )*;
 
 icl_source : iclSource_items+ ;
 iclSource_items : nameSpace_def | useNameSpace_def | module_def;

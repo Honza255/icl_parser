@@ -1,29 +1,31 @@
-from typing import Any
-from parser.iclParser import iclParser
+from .icl_common import *
 
 class IclSignal:
-    
-    def fill_numbers(self, index_l: int, index_h: int) -> list:
-        tmp = None
-        if index_l <= index_h:
-            tmp =  list(range(index_l, index_h + 1))
-        else:
-            tmp =  list(range(index_l, index_h - 1, -1))
-        return tmp   
-     
-    def __init__(self, name: str,  index_l=None, index_h = None):
-        self.hier = []
-        self.name = name
+
+    def __init__(self, name: str,  index_left=None, index_right = None):
+        self.name:str = name
         self.negation: bool = 0
-        if((index_h is not None) and (index_l is not None)):
-            self.indexes = self.fill_numbers(index_l, index_h)
-        elif((index_h is None) and (index_l is not None)):
-            self.indexes = [index_l]
-        elif((index_h is not None) and (index_l is None)):            
-            raise ValueError("Index high defined but index low is not defined")
+        self.dir_right_to_left: bool = 1
+        self.hier:list[str] = []
+
+        if((index_right is not None) and (index_left is not None)):
+            if index_left <= index_right:
+                self.indexes =  list(range(index_left, index_right + 1))
+                self.dir_right_to_left = 0
+            else:
+                self.indexes =  list(range(index_left, index_right - 1, -1))            
+                self.dir_right_to_left = 1                
+        elif((index_right is None) and (index_left is not None)):
+            self.indexes = [index_left]
+        elif((index_right is not None) and (index_left is None)):            
+            raise ValueError("index_right defined but index_left is not defined")
         else:
             self.indexes = []
 
+    # 1 - right to left ([13:00]) 
+    # 0 - right to left ([00:13])
+    def get_direction(self) -> bool:
+        return self.dir_right_to_left
 
     def add_hiearachy(self, hier_lvl: str):
         self.hier.append(hier_lvl)
@@ -93,7 +95,7 @@ class IclNumber:
             source = source.replace(remove_char, "")
 
         # Allowed symbols
-        allowed_symbols = "Xx0123456789AaBbCcDdEeFf"
+        allowed_symbols = "-Xx0123456789AaBbCcDdEeFf"
         assert(all(char in allowed_symbols for char in source))
 
         # Translate string to number            
@@ -308,16 +310,23 @@ class ConcatSig():
         # Unsized check can be done immediately
         self.check_unsized_numbers()
         
+
+
     def check(self) -> None:
         valid_types = {
-            "scan" : [IclScanInPort, IclScanRegister, IclScanMux, IclScanOutPort, IclAlias],
-            "data" : [IclDataInPort, IclDataOutPort, IclSelectPort, IclScanRegister,  IclLogicSignal, IclAlias, IclDataRegister, IclToIrSelectPort, IclToSelectPort, IclOneHotDataGroup, IclOneHotScanGroup, IclDataMux],
-            "alias": [IclDataInPort, IclDataOutPort, IclScanRegister, IclDataRegister],
-            "reset": [IclResetPort, IclToResetPort, IclScanRegister, IclDataInPort, IclDataOutPort],
-            "to_capture_en": [IclCaptureEnable, IclToCaptureEnable],
-            "shiften": [IclShiftEnable, IclToShiftEnable],
-            "updateen": [IclUpdateEnable, IclToUpdateEnable],
-            "unknown": []
+            CONCAT_SCAN_T : [IclScanInPort, IclScanRegister, IclScanMux, IclScanOutPort, IclAlias],
+            CONCAT_DATA_T : [IclDataInPort, IclDataOutPort, IclSelectPort, IclScanRegister,  IclLogicSignal, IclAlias, IclDataRegister, IclToIrSelectPort, IclToSelectPort, IclOneHotDataGroup, IclOneHotScanGroup, IclDataMux],
+            CONCAT_ALIAS_T: [IclDataInPort, IclDataOutPort, IclScanRegister, IclDataRegister],
+            CONCAT_RESET_T: [IclResetPort, IclToResetPort, IclScanRegister, IclDataInPort, IclDataOutPort],
+            CONCAT_CE_T: [IclCaptureEnable, IclToCaptureEnable],
+            CONCAT_SE_T: [IclShiftEnable, IclToShiftEnable],
+            CONCAT_UE_T: [IclUpdateEnable, IclToUpdateEnable],
+            CONCAT_TRST_T: [IclTrstPort, IclToTrstPort],
+            CONCAT_TMS_T: [IclTmsPort, IclToTmsPort],
+            CONCAT_CLOCK_T: [IclClockPort, IclToClockPort, IclTckPort, IclTckPort],
+            CONCAT_TCK_T: [IclTckPort, IclTckPort],
+            CONCAT_NUMBER_T: [IclNumber],
+            CONCAT_UNKNOWN_T: []
         }
 
         for sig in self.concat_sigs:
@@ -325,7 +334,7 @@ class ConcatSig():
                 continue
             checkSigExistance(self.instance, sig)
             icl_item = self.instance.get_icl_item_name(sig.get_relative_name())
-            if(self.type != "unknown"):
+            if(self.type != CONCAT_UNKNOWN_T):
                 assert type(icl_item) in valid_types[self.type], f"invalid type {type(icl_item)} for {self.type} in ConcatSig {self.concat_sigs}" 
 
     def set_type(self, type:str):
@@ -334,7 +343,7 @@ class ConcatSig():
     def check_unsized_numbers(self) -> int:
         unsized_numbers = sum(1 for sig in self.concat_sigs if isinstance(sig, IclNumber) and not sig.sized_number())
         assert unsized_numbers in {0, 1}
-        return unsized_numbers
+        return unsized_numbers 
 
     def negate(self):
         for sig in self.concat_sigs:
@@ -483,6 +492,8 @@ class ConcatSig():
                     sized_bits += sig.get_size()
                 else:
                     sel_item = self.instance.get_icl_item_name(sig.get_relative_name())
+                    if(isinstance(sel_item, IclInstance)):
+                        raise ValueError(f"{sig.get_relative_name()} -> {sel_item.get_hier()} is an instance")
                     min_size   += sel_item.get_vector_size()
                     sized_bits += sel_item.get_vector_size()
                     
@@ -600,7 +611,7 @@ class IclInstance(IclItem):
         self.connections: list[{IclSignal,ConcatSig}] = []
         self.parameters_override = {}
         self.parameters = {}
-
+        self.port_seq: dict = {}
         icl_graph = None
         
     def add_icl_item(self, icl_item: IclItem):
@@ -622,8 +633,10 @@ class IclInstance(IclItem):
                         return icl_item
                     else:
                         #print("B-1")
+                        if(not isinstance(icl_item, IclInstance)):
+                            raise ValueError(f"ICL name: {name} is separated into hier path of a IclInstance {item_to_search} and name {name_seq}, but {item_to_search} is a {type(icl_item)}" )
                         return icl_item.get_icl_item_name(".".join(name_seq))
-            raise ValueError("Item {} not found in instace of {} module {}".format(name,self.get_name(), self.get_module_scope()))
+            raise ValueError("Item {} not found in instace of {} module {}".format(name,self.get_hier(), self.get_module_scope()))
     
     def get_icl_item_type(self, item_type) -> list[IclItem]:
         icl_items = []
@@ -696,11 +709,60 @@ class IclInstance(IclItem):
             else:
                 instances.append(item)
 
+        # 1. Check all instances under this instance
         print(instances)
         for item in instances:
             print("Check", item, item.get_name())
             item.check()
 
+        # 2. Correct type of input connection into instance this instance
+        # (icl_process is not able to tell what kind of type is source:ConcatSig )
+        for connection in self.connections:
+            in_signal: IclSignal = list(connection.keys())[0]
+            source: ConcatSig = list(connection.values())[0]
+            in_port = self.get_icl_item_name(in_signal.get_name())
+
+            if(isinstance(in_port, IclResetPort)):
+                source.set_type(CONCAT_RESET_T)
+            elif(isinstance(in_port, IclScanInPort)):
+                source.set_type(CONCAT_SCAN_T)
+                for idx, item in enumerate(source.get_all_icl_items()):
+                    if(isinstance(item, IclInstance)):
+                        scan_items = item.get_icl_item_type(IclScanOutPort)
+                        if(len(scan_items) == 1):
+                            new_source = IclSignal(scan_items[0].get_name())
+                            new_source.add_hiearachy(source.concat_sigs[idx].get_relative_name()) 
+                            source.concat_sigs[idx] = new_source
+                            print(f"Warning: Input connection to instance {self.get_hier()} is instance and that is not allowed," +
+                                    f"but because instance has only one scan input it is assumed this is the input connection")
+
+            elif(isinstance(in_port, (IclDataInPort, IclAddressPort, IclReadEnPort, IclWriteEnPort, IclSelectPort))):
+                source.set_type(CONCAT_DATA_T)
+            elif(isinstance(in_port, IclClockPort)):
+                source.set_type(CONCAT_CLOCK_T)
+            elif(isinstance(in_port, IclClockPort)):
+                source.set_type(CONCAT_TCK_T)
+            elif(isinstance(in_port, IclTckPort)):
+                source.set_type(CONCAT_TCK_T)
+            elif(isinstance(in_port, IclShiftEnable)):
+                source.set_type(CONCAT_SE_T)
+            elif(isinstance(in_port, IclCaptureEnable)):
+                source.set_type(CONCAT_CE_T)
+            elif(isinstance(in_port, IclUpdateEnable)):
+                source.set_type(CONCAT_UE_T)
+            elif(isinstance(in_port, IclTmsPort)):
+                source.set_type(CONCAT_TMS_T)
+            elif(isinstance(in_port, IclTrstPort)):
+                source.set_type(CONCAT_TRST_T)
+            else:
+                raise ValueError(f"Unexpected instance input to port {in_port}, ({type(in_port)}) {in_signal.get_name()} to {self.instance.get_name_with_hier()}")
+            
+            # IclInstance is not allowed to source a port without specifing which port is used
+            for item in source.get_all_icl_items():
+                if(isinstance(item, IclInstance)):
+                    raise ValueError(f"IclInstance must specify port which will be passed as input connection, {self.get_hier()} - {in_port.get_name()}")
+
+        # 3. Check all items (icl items) which are not instances
         print(non_instaces)
         for item in non_instaces:
             print("Check", item, item.get_name())
@@ -730,6 +792,20 @@ class IclInstance(IclItem):
 
         return unique_dicts
 
+    # For keeping track sequence of ports from top to bottom in ICL module
+    def add_port_to_sequence(self, port_type:str, port: IclSignal):
+        if(port_type in self.port_seq):
+            #self.port_seq[port_type].append(port)
+            self.port_seq[port_type].insert(0, port)
+        else:             
+            self.port_seq[port_type] = [port]
+
+    def get_port_type_sequence(self, port_type: str) -> ConcatSig | None:
+        if(port_type in self.port_seq):
+            return ConcatSig(self.instance,  self.port_seq[port_type], CONCAT_UNKNOWN_T)
+        else:
+            return None
+    
 class IclEnum(IclItem):
 
     def __init__(
@@ -883,8 +959,14 @@ class IclScanRegister(IclItem):
         self.scan_reg_size = len(self.get_all_named_indexes())
         self.current_value = IclNumber("x", "bin", self.scan_reg_size)
         self.next_value    = IclNumber("x", "bin", self.scan_reg_size)
+        self.expected_data = IclNumber("x", "bin", self.scan_reg_size)
+        self.bits_to_read  = IclNumber("0", "bin", self.scan_reg_size)
+        
         self.activate = 0
         self.select_clause = ""
+
+        # For retargeting
+        self.scan_selection_smt: str = ""
 
     def set_current_bit(self, value: int, index:int):
         self.current_value.set_bit(value, index)
@@ -900,11 +982,32 @@ class IclScanRegister(IclItem):
 
     def set_next_value_to_current(self):
         self.current_value = self.next_value.copy()
-        
+
+    def set_next_iapply(self):
+        self.activate = 1
+
+    def get_bits_to_read(self):
+        return self.bits_to_read
+    
+    def set_read_bits(self, value: int):
+        self.bits_to_read.set_value(value)
+
+    def set_expected_bits(self, value: int):
+        self.expected_data.set_value(value)
+
+    def get_expected_bits(self):
+        return self.expected_data
+
+    def disable_next_iapply(self):
+        self.activate = 0
+            
+    def is_in_next_iapply(self):
+        return self.activate
+    
     def reset(self):
         if(self.reset_source):
-            self.current_value = self.reset_source.get_icl_number()
-            self.next_value = self.reset_source.get_icl_number()
+            self.current_value = self.reset_source.get_icl_number().copy()
+            self.next_value = self.reset_source.get_icl_number().copy()
 
     def get_vector_size(self) -> int:
         # vector_size = 0
@@ -914,6 +1017,9 @@ class IclScanRegister(IclItem):
         #     vector_size += 1
         # return vector_size
         return self.scan_reg_size
+    
+    def get_capture_source(self) ->  ConcatSig | EnumRef:
+        return self.capture_source
     
     def get_all_named_indexes(self) -> list[str]:
         return self.get_item_all_named_indexes(self.scan_reg)
@@ -962,9 +1068,9 @@ class IclScanRegister(IclItem):
             else:
                 return in_data
         
-        self.default_value_source = enum_symbol_check(self, self.in_default_value, "number")
-        self.capture_source = enum_symbol_check(self, self.in_capture_source, "data")
-        self.reset_source = enum_symbol_check(self, self.in_reset_value, "number")
+        self.default_value_source = enum_symbol_check(self, self.in_default_value, CONCAT_NUMBER_T)
+        self.capture_source = enum_symbol_check(self, self.in_capture_source, CONCAT_DATA_T)
+        self.reset_source = enum_symbol_check(self, self.in_reset_value, CONCAT_NUMBER_T)
 
         if self.default_value_source:
             self.default_value_source.check()
@@ -1101,7 +1207,7 @@ class IclLogicSignal(IclItem):
 
             # Get the numeric value of the enum symbol
             enum_symbol_value = enumeration_reference.get_enum_number(var_2.get_name())
-            exp_instances[1] = ConcatSig(self.instance, [enum_symbol_value], "number").get_list_for_expr()
+            exp_instances[1] = ConcatSig(self.instance, [enum_symbol_value], CONCAT_NUMBER_T).get_list_for_expr()
 
         for idx, x in enumerate(exp_instances):
             print(x, type(x))
@@ -1246,18 +1352,95 @@ class IclLogicSignal(IclItem):
         print(self.ctx)
         print(self.processed_expression)
 
-        #input()
-
 class IclDataRegister(IclItem):
 
     def __init__(
             self,
             instance: IclInstance,
             icl_name: IclSignal,
+            reg_type: str,
+            source: ConcatSig,
+            write_en: IclSignal,
+            address: int,
             ctx: str
         ) -> None:
         super().__init__(instance, icl_name.get_name(), instance.get_hier(), instance.get_hier(), ctx)
         self.icl_name: IclSignal = icl_name
+
+        # Type of data register: selectable, addressable or callback
+        self.type_of_data_reg:str = reg_type
+        self.one_hot: IclOneHotDataGroup = None
+        self.reg_address: int = address
+        self.write_source: ConcatSig = source
+        self.write_en: IclSignal = write_en
+
+        # Is is able to read/write
+        self.is_readable: bool = None
+        self.is_writable: bool = None
+
+
+        # Register values
+        self.data_reg_size = len(self.get_all_named_indexes())
+        self.current_value = IclNumber("x", "bin", self.data_reg_size)
+        self.bits_to_read  = IclNumber("0", "bin", self.data_reg_size)
+        self.expected_data = IclNumber("x", "bin", self.data_reg_size)
+        self.next_value    = IclNumber("x", "bin", self.data_reg_size)
+        self.write_activate = 0
+        self.read_activate = 0
+
+    def set_current_bit(self, value: int, index:int):
+        self.current_value.set_bit(value, index)
+
+    def set_current_value(self, value: int):
+        self.current_value.set_value(value)
+    
+    def set_next_bit(self, value: int, index:int):
+        self.next_value.set_bit(value, index)
+
+    def set_expected_bits(self, value: int):
+        self.expected_data.set_value(value)
+
+    def get_expected_bits(self):
+        return self.expected_data
+
+    def get_bits_to_read(self):
+        return self.bits_to_read
+    
+    def set_read_bits(self, value: int):
+        self.bits_to_read.set_value(value)
+
+    def set_next_value(self, value: int):
+        self.next_value.set_value(value)
+
+    def set_next_value_to_current(self):
+        self.current_value = self.next_value.copy()
+
+    def set_next_write_iapply(self):
+        self.write_activate = 1
+
+    def disable_next_write_iapply(self):
+        self.write_activate = 0
+            
+    def is_in_next_write_iapply(self):
+        return self.write_activate
+
+    def set_next_read_iapply(self):
+        self.read_activate = 1
+
+    def disable_next_read_iapply(self):
+        self.raed_activate = 0
+            
+    def is_in_next_read_iapply(self):
+        return self.read_activate
+
+    def reset(self):
+        # Temp solution
+        self.current_value.set_value(0)
+        self.next_value.set_value(0)
+        self.bits_to_read.set_value(0)
+
+    def set_mux(self, one_hot: "IclOneHotDataGroup"):
+        self.one_hot = one_hot
 
     def get_all_named_indexes(self) -> list[str]:
         return self.get_item_all_named_indexes(self.icl_name)
@@ -1267,9 +1450,113 @@ class IclDataRegister(IclItem):
 
     def get_vector_size(self) -> int:
         return len(self.get_all_indexes())
-        
+
+    def is_readable(self) -> bool:
+        return self.is_readable
+
+    def is_writable(self) -> bool:
+        return self.is_writable
+
+    def get_reg_address(self) -> int:
+        return self.reg_address
+
+    def get_reg_type(self) -> str:
+        return self.type_of_data_reg
+
+    def get_data_out(self) -> ConcatSig:
+        return self.instance.get_port_type_sequence((IclDataOutPort))
+
+    def get_data_in(self) -> ConcatSig:
+        return self.instance.get_port_type_sequence((IclDataInPort))
+
+    def get_write_en(self) -> ConcatSig:
+        return self.instance.get_port_type_sequence((IclWriteEnPort))
+
+    def get_read_en(self) -> ConcatSig:
+        return self.instance.get_port_type_sequence((IclReadEnPort))
+
+    def get_reg_select(self) -> str:
+        if(self.type_of_data_reg == "addressable"):
+            addres_port: ConcatSig = self.instance.get_port_type_sequence((IclAddressPort))
+            address_size: int = self.reg_address.bit_length()
+            address_size = 1 if (address_size == 0) else address_size
+
+            address_port_bits: list[str] = addres_port.get_all_named_indexes_with_prefix(max_size=addres_port.get_sized_bits_size(), neg_on=0)
+
+            return_item = []
+            for i in range(address_size):
+                bit_val = (self.reg_address >> i) & 1
+                new_exp = f"{address_port_bits[i]}" if bit_val == 1 else f"(not {address_port_bits[i]})"
+                return_item.append(new_exp)
+            return_item = " ".join(return_item)
+            return_item = f"(and {return_item})"
+            return return_item
+        else:
+            raise ValueError(f"Error {self.type_of_data_reg}")
+
     def check(self):
-        pass
+        
+        if(self.type_of_data_reg == "addressable"):
+            reg_size: int = self.get_vector_size()
+            address_size: int = self.reg_address.bit_length()
+            address_size = 1 if (address_size == 0) else address_size
+            
+            addres_port: ConcatSig = self.instance.get_port_type_sequence((IclAddressPort))
+            data_in_port: ConcatSig = self.instance.get_port_type_sequence((IclDataInPort))
+            data_out_port: ConcatSig = self.instance.get_port_type_sequence((IclDataOutPort))           
+            write_en_port: ConcatSig = self.instance.get_port_type_sequence((IclWriteEnPort))
+            read_en_port: ConcatSig = self.instance.get_port_type_sequence((IclReadEnPort))
+
+            if(self.one_hot == None):
+                raise ValueError(f"Addressable data register is not under one hot data group, {self.ctx}")
+                        
+            if(addres_port == None):
+                raise ValueError(f"No Address port in current module for addressable register, {self.ctx}")
+            else:
+                assert(addres_port.sized_number())
+
+                address_port_size = addres_port.get_sized_bits_size()
+                if(not (address_size <= address_port_size)):
+                    raise ValueError(f"Address port size({address_port_size}) is smaller thatn register address value ({address_size}), {self.ctx}")
+           
+            if((write_en_port != None) and (data_in_port!= None)):
+                assert(write_en_port.sized_number())
+                assert(data_in_port.sized_number())
+
+                write_en_port_size = write_en_port.get_sized_bits_size()
+                data_in_port_size = data_in_port.get_sized_bits_size()
+
+                if(write_en_port_size != 1):
+                    raise ValueError(f"Write EN has more than one bit", {self.ctx} )
+
+                if(not (reg_size <= data_in_port_size)):
+                    raise ValueError(f"Data in port size({data_in_port_size}) is smaller thatn register that is supposed to write to ({reg_size}), {self.ctx}")
+
+                self.is_writable = 1
+
+            if((read_en_port != None) and (data_out_port != None)):
+                assert(read_en_port.sized_number())
+                assert(data_out_port.sized_number())
+
+                read_en_port_size = read_en_port.get_sized_bits_size()
+                data_out_port_size = data_out_port.get_sized_bits_size()
+
+
+                if(read_en_port_size != 1):
+                    raise ValueError(f"Read EN has more than one bit")
+
+                if(not (reg_size <= data_out_port_size)):
+                    raise ValueError(f"Data out port size({data_out_port_size}) is smaller thatn register that is supposed to write to ({reg_size}), {self.ctx}")
+
+                if(not (reg_size <= self.one_hot.get_vector_size())):
+                    raise ValueError(f"One hot data group with size ({self.one_hot.get_vector_size()}) is smaller that register that is supposed to get data ({reg_size}), {self.ctx}")
+
+                self.is_readable = 1
+
+        print(f"{self.ctx}")
+        print(f"Write able-{self.is_writable}")
+        print(f"Read able-{self.is_readable}")
+        
 
 class IclOneHotScanGroup(IclItem):
 
@@ -1301,12 +1588,14 @@ class IclOneHotDataGroup(IclItem):
             self,
             instance: IclInstance,
             icl_name: IclSignal,
-            selectee: list,
             ctx: str
         ) -> None:
         super().__init__(instance, icl_name.get_name(), instance.get_hier(), instance.get_hier(), ctx)
         self.icl_name: IclSignal = icl_name
-        self.selectee: list = selectee
+        self.selectee: list = []
+
+    def add_selectee(self, item):
+        self.selectee.append(item)
 
     def get_all_named_indexes(self) -> list[str]:
         return self.get_item_all_named_indexes(self.icl_name)
@@ -1323,18 +1612,18 @@ class IclOneHotDataGroup(IclItem):
 
 class IclScanMux(IclItem):
     
-    def __init__(self, instance: IclInstance, ctx, scan_mux: IclSignal, scan_select: ConcatSig, mux_selects: list[tuple[list[IclNumber],ConcatSig]]) -> None:
-        super().__init__(instance, scan_mux.get_name(), instance.get_hier(), instance.get_module_scope(), ctx)
-        self.scan_mux = scan_mux
-        self.scan_select = scan_select
+    def __init__(self, instance: IclInstance, ctx, mux: IclSignal, mux_control: ConcatSig, mux_selects: list[tuple[list[IclNumber],ConcatSig]]) -> None:
+        super().__init__(instance, mux.get_name(), instance.get_hier(), instance.get_module_scope(), ctx)
+        self.mux = mux
+        self.mux_control = mux_control
         self.mux_selects = mux_selects
         self.connections = []
 
     def get_all_named_indexes(self) -> list[str]:
-        return self.get_item_all_named_indexes(self.scan_mux)
+        return self.get_item_all_named_indexes(self.mux)
 
     def get_all_indexes(self) -> list[int]:
-        return self.get_item_all_indexes(self.scan_mux)
+        return self.get_item_all_indexes(self.mux)
     
     def get_all_connections(self) -> list[tuple[str]]:
         return self.connections
@@ -1343,32 +1632,37 @@ class IclScanMux(IclItem):
         return len(self.get_all_indexes())
         
     def check(self):
-        self.scan_select.check()
-        scan_sel_size = self.scan_select.get_vector_min_size()
-        scan_sel_names = self.scan_select.get_all_named_indexes(scan_sel_size)
+        self.mux_control.check()
+        mux_control_size = self.mux_control.get_vector_min_size()
+        mux_control_names = self.mux_control.get_all_named_indexes(mux_control_size)
 
-        scan_mux_names = self.get_all_named_indexes()
-        scan_mux_size = 1 if self.scan_mux.get_size() == 0 else self.scan_mux.get_size()
+        mux_names = self.get_all_named_indexes()
+        mux_size = 1 if self.mux.get_size() == 0 else self.mux.get_size()
+
+        # If mux selection value has unsized value, try to size it
+        # to mux control size, if it fits, it is ok, otherwise it is not ok
+        # Also check that all sized values match with mux control size
+        for selectee_list, tos in self.mux_selects:
+            for mux_selection_value in selectee_list:
+                print(mux_selection_value)               
+                if(not mux_selection_value.sized_number()):
+                    mux_selection_value.resize(mux_control_size)
+                if(mux_selection_value.get_icl_size() != mux_control_size):
+                    raise ValueError(f"In {self.ctx} - mux select size and mux control size does not match, {mux_selection_value.get_icl_size()} - {mux_control_size}")
 
         for selectee_list, tos in self.mux_selects:
-            selectee_size = selectee_list[0].get_icl_size()
-            for selectee_expr_smt in selectee_list:
-                assert(type(selectee_expr_smt) == IclNumber)
-                assert(selectee_list[0].get_icl_size() == selectee_size)
-            assert(selectee_size == scan_sel_size)
-
             tos.check()      
             to_size = tos.get_vector_min_size()
-            assert(scan_mux_size == to_size)
+            assert(mux_size == to_size)
 
-            tos_names = tos.get_all_named_indexes(scan_mux_size)
+            tos_names = tos.get_all_named_indexes(mux_size)
 
             selectee_list_expr_smt = []
             selectee_list_expr_py = []
             for selectee in selectee_list:
                 selectee_expr_smt = []
                 selectee_expr_py = []
-                for idx, scan_sel_bit in enumerate(scan_sel_names):
+                for idx, scan_sel_bit in enumerate(mux_control_names):
                     pass
                     #scan_sel_bit = scan_sel_bit.replace('.', '_')
                     print(selectee.get_bit(idx).get_number())
@@ -1386,23 +1680,23 @@ class IclScanMux(IclItem):
             selectee_list_expr_smt = "(or {})".format(" ".join(selectee_list_expr_smt))
             selectee_list_expr_py = "Or({})".format(",".join(selectee_list_expr_py))
 
-            self.connections += (list(zip(tos_names, scan_mux_names, [selectee_list_expr_smt], [selectee_list_expr_py])))
+            self.connections += (list(zip(tos_names, mux_names, [selectee_list_expr_smt], [selectee_list_expr_py])))
 
 
 class IclDataMux(IclItem):
     
-    def __init__(self, instance: IclInstance, ctx, scan_mux: IclSignal, scan_select: ConcatSig, mux_selects: list[tuple[list[IclNumber],ConcatSig]]) -> None:
-        super().__init__(instance, scan_mux.get_name(), instance.get_hier(), instance.get_module_scope(), ctx)
-        self.scan_mux = scan_mux
-        self.scan_select = scan_select
+    def __init__(self, instance: IclInstance, ctx, mux: IclSignal, mux_control: ConcatSig, mux_selects: list[tuple[list[IclNumber],ConcatSig]]) -> None:
+        super().__init__(instance, mux.get_name(), instance.get_hier(), instance.get_module_scope(), ctx)
+        self.mux = mux
+        self.mux_control = mux_control
         self.mux_selects = mux_selects
         self.connections = []
 
     def get_all_named_indexes(self) -> list[str]:
-        return self.get_item_all_named_indexes(self.scan_mux)
+        return self.get_item_all_named_indexes(self.mux)
 
     def get_all_indexes(self) -> list[int]:
-        return self.get_item_all_indexes(self.scan_mux)
+        return self.get_item_all_indexes(self.mux)
     
     def get_all_connections(self) -> list[tuple[str]]:
         return self.connections
@@ -1411,32 +1705,38 @@ class IclDataMux(IclItem):
         return len(self.get_all_indexes())
         
     def check(self):
-        self.scan_select.check()
-        scan_sel_size = self.scan_select.get_vector_min_size()
-        scan_sel_names = self.scan_select.get_all_named_indexes(scan_sel_size)
+        self.mux_control.check()
+        mux_control_size = self.mux_control.get_vector_min_size()
+        mux_control_names = self.mux_control.get_all_named_indexes(mux_control_size)
 
-        scan_mux_names = self.get_all_named_indexes()
-        scan_mux_size = 1 if self.scan_mux.get_size() == 0 else self.scan_mux.get_size()
+        mux_names = self.get_all_named_indexes()
+        mux_size = 1 if self.mux.get_size() == 0 else self.mux.get_size()
+
+        # If mux selection value has unsized value, try to size it
+        # to mux control size, if it fits, it is ok, otherwise it is not ok
+        # Also check that all sized values match with mux control size
+        for selectee_list, tos in self.mux_selects:
+            for mux_selection_value in selectee_list:
+                print(mux_selection_value)               
+                if(not mux_selection_value.sized_number()):
+                    mux_selection_value.resize(mux_control_size)
+                if(mux_selection_value.get_icl_size() != mux_control_size):
+                    raise ValueError(f"In {self.ctx} - mux select size and mux control size does not match, {mux_selection_value.get_icl_size()} - {mux_control_size}")
+
 
         for selectee_list, tos in self.mux_selects:
-            selectee_size = selectee_list[0].get_icl_size()
-            for selectee_expr_smt in selectee_list:
-                assert(type(selectee_expr_smt) == IclNumber)
-                assert(selectee_list[0].get_icl_size() == selectee_size)
-            assert(selectee_size == scan_sel_size)
-
             tos.check()      
             to_size = tos.get_vector_min_size()
-            assert(scan_mux_size == to_size)
+            assert(mux_size == to_size)
 
-            tos_names = tos.get_all_named_indexes(scan_mux_size)
+            tos_names = tos.get_all_named_indexes(mux_size)
 
             selectee_list_expr_smt = []
             selectee_list_expr_py = []
             for selectee in selectee_list:
                 selectee_expr_smt = []
                 selectee_expr_py = []
-                for idx, scan_sel_bit in enumerate(scan_sel_names):
+                for idx, scan_sel_bit in enumerate(mux_control_names):
                     pass
                     scan_sel_bit = scan_sel_bit.replace('.', '_')
                     print(selectee.get_bit(idx).get_number())
@@ -1454,7 +1754,7 @@ class IclDataMux(IclItem):
             selectee_list_expr_smt = "(or {})".format(" ".join(selectee_list_expr_smt))
             selectee_list_expr_py = "Or({})".format(",".join(selectee_list_expr_py))
 
-            self.connections += (list(zip(tos_names, scan_mux_names, [selectee_list_expr_smt], [selectee_list_expr_py])))
+            self.connections += (list(zip(tos_names, mux_names, [selectee_list_expr_smt], [selectee_list_expr_py])))
 
 class IclScanInterface(IclItem):
 
@@ -1543,6 +1843,8 @@ class IclPort(IclItem):
     def get_lsb_index(self) -> int:
         return self.get_all_indexes()[0]
     
+    def get_ports(self) -> list[IclSignal]:
+        return self.ports
     
     # Only one unsized port can exist
     # Multiple sized ports can exist
@@ -2029,7 +2331,7 @@ class IclToClockPort(AddClockSettings, AddPortSource, IclPort):
 
         super().__init__(instance, ctx, port, attributes)
         self.add_source(port, source)
-        self.add_clock(clock_settings)
+        self.add_clock(port, clock_settings)
 
     def check(self) -> int:
         super().check()

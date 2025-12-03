@@ -1,6 +1,7 @@
-# Poor IJTAG ICL Parser to Scan Graph
+# Poor IJTAG ICL Parser to Scan Graph and retargeter
 
-This tool attempts to create a scan graph from an ICL file. 
+This tool can create scan graph from an ICL file. 
+It can also partially retarget data to scan chains.
 (Note: Work may still be in progress)
 
 ## Supported ICL Statements
@@ -16,10 +17,16 @@ This tool attempts to create a scan graph from an ICL file.
 - scanRegister_def
 - scanMux_def
 
-## How to Run
-- python3 main.py ICL file ICL module to parse
-- python3 main.py ./test_icls/scan_mux_001.icl "scan_mux_001"
 
+## For expected usage 
+- check main.py or tests
+
+## How to Run unittests all/one
+- python -m unittest discover
+- python -m unittest tests.test_icl_syntax_3.TestIclSyntax3
+
+## Python dependencies
+- pip install antlr4-python3-runtime==4.7.2 networkx[default] sympy z3-solver matplotlib cocotb cocotb-bus
 
 ## Useful Paper Links
 - [IJTAG Standard (IEEE 1687-2014)](https://ieeexplore.ieee.org/document/6974961)

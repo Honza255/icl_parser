@@ -1,16 +1,34 @@
-from typing import Any
 from antlr4 import *
 import antlr4
 
-from parser.iclLexer import iclLexer
-from parser.iclListener import iclListener
-from parser.iclParser import iclParser
+from copy import deepcopy
 
-from icl_items import *
+from .icl_parser.iclListener import iclListener
+from .icl_parser.iclParser import iclParser
 
+from .icl_items import *
+from .icl_common import *
+
+import inspect
+import logging
+
+logger = logging.getLogger(__name__)
+logging.basicConfig(format='%(levelname)s:%(message)s', level=logging.INFO, encoding='utf-8')
+#logging.basicConfig(format='%(levelname)s:%(message)s', level=logging.DEBUG, encoding='utf-8')
+
+parallel_on: bool = False
+
+def process_instance(in_data):
+    icl_eval_lis, parser_tree = in_data
+    walker = ParseTreeWalker()
+    walker.walk(icl_eval_lis, parser_tree)
+
+    return icl_eval_lis.icl_instance
 
 class IclProcess(iclListener):
     def __init__(self, instance_name, module_name, scope_name="root", hier=""):
+        self.scope_name = scope_name
+
         self.all_icl_modules = {}
         self.start_icl_module = {}
         self.icl_instance = IclInstance(instance_name, hier, module_name, None)
@@ -18,13 +36,19 @@ class IclProcess(iclListener):
         self.record  = {}
         self.result = {}
 
+        # Multi processing
+        self.processes = []
+
         # Data
         self.parameters = {}
+
+        # Parsed data
+        self.parsed_icl_modules: dict[str: IclInstance] = {}
 
     def print_tree(self, node, indent=""):
         # Check if the node is a terminal node (i.e., has no children)
         if not isinstance(node, antlr4.tree.Tree.TerminalNode):
-            print(f"{indent}{type(node).__name__} -> {node.getText()}")
+            # logging.debug(f"{indent}{type(node).__name__} -> {node.getText()}")
 
             # Indent for children
             child_indent = indent + "    "
@@ -35,6 +59,7 @@ class IclProcess(iclListener):
 
     # alias_def : 'Alias' alias_name '=' concat_hier_data_signal (';' | ('{' alias_item+ '}' ) ) ;
     # alias_name : reg_port_signal_id;
+    # concat_hier_data_signal : '~'? hier_data_signal (',' '~'? hier_data_signal)* ;    
     # alias_item : attribute_def |
     #             'AccessTogether' ';' |
     #             alias_iApplyEndState |
@@ -43,13 +68,31 @@ class IclProcess(iclListener):
     # alias_refEnum : 'RefEnum' enum_name ';' ;
     def exitAlias_def(self, ctx:iclParser.Alias_defContext):
         alias_name: IclSignal = self.result[ctx.alias_name().reg_port_signal_id()]
-        concat_sig: ConcatSig = self.result[ctx.concat_hier_data_signal()]
+        concat_sig: ConcatSig
         items = {
             "att": [],
             "ace": 0,
             "end": None,
             "ref": None ,
         }
+        
+        data = []
+        operator = ""
+        for index in range(ctx.concat_hier_data_signal().getChildCount()):
+            if(ctx.concat_hier_data_signal().getChild(index).getText() == "~"):
+                operator = "~"
+            elif(ctx.concat_hier_data_signal().getChild(index).getText() == ","):
+                operator = ""
+            else:
+                item = self.result[ctx.concat_hier_data_signal().getChild(index)]
+                if type(item) == IclSignal:
+                    if(operator == "~"):
+                        item = ~item
+                    operator = ""
+                    data.append(item)
+                else:
+                    raise ValueError("Unknown type{}".format(type(item)))                    
+        concat_sig = ConcatSig(self.icl_instance, data, CONCAT_ALIAS_T)
         
         for item in ctx.alias_item():
             if (item.attribute_def()):
@@ -74,27 +117,7 @@ class IclProcess(iclListener):
         self.icl_instance.add_icl_item(alias)
         
         self.result[ctx] = (alias_name, concat_sig, items)
-        print("exitAlias_def-X", ctx.getText(), "->", self.result[ctx])
-
-    # concat_hier_data_signal : '~'? hier_data_signal (',' '~'? hier_data_signal)* ;    
-    def exitConcat_hier_data_signal(self, ctx:iclParser.Concat_hier_data_signalContext):
-        data = []
-        operator = ""
-        for index in range(ctx.getChildCount()):
-            if(ctx.getChild(index).getText() == "~"):
-                operator = "~"
-            elif(ctx.getChild(index).getText() == ","):
-                operator = ""
-            else:
-                item = self.result[ctx.getChild(index)]
-                if type(item) == IclSignal:
-                    if(operator == "~"):
-                        item = ~item
-                    operator = ""
-                    data.append(item)
-                else:
-                    raise ValueError("Unknown type{}".format(type(item)))                    
-        self.result[ctx] = ConcatSig(self.icl_instance, data, "alias")
+        logging.debug(f'{inspect.stack()[0][3]} -> {ctx.getText()} -> {self.result[ctx]}')
 
     # hier_data_signal : (instance_name '.')* reg_port_signal_id ;    
     def exitHier_data_signal(self, ctx:iclParser.Hier_data_signalContext):
@@ -116,7 +139,7 @@ class IclProcess(iclListener):
         self.icl_instance.add_icl_item(icl_enum)
 
         self.result[ctx] = (enum_name, enum_items)
-        print("exitEnum_def-X", ctx.getText(), "->", self.result[ctx])
+        logging.debug(f'{inspect.stack()[0][3]} -> {ctx.getText()} -> {self.result[ctx]}')
 
     # enum_name : SCALAR_ID ;
     def exitEnum_name(self, ctx:iclParser.Enum_nameContext):
@@ -136,8 +159,6 @@ class IclProcess(iclListener):
     def exitEnum_value(self, ctx:iclParser.Enum_valueContext):
         self.result[ctx] = self.result[ctx.concat_number()]
 
-
-
     # logicSignal_def : 'LogicSignal' logicSignal_name '{' logic_expr ';' '}' ;
     def exitLogicSignal_def(self, ctx:iclParser.LogicSignal_defContext):
         logicSignal_name: IclSignal = self.result[ctx.logicSignal_name()] 
@@ -150,7 +171,7 @@ class IclProcess(iclListener):
         #self.print_tree(ctx, "")
 
         self.result[ctx] =  (logicSignal_name, logic_expr)       
-        print("exitLogicSignal_def-X", ctx.getText(), "->", self.result[ctx])   
+        logging.debug(f'{inspect.stack()[0][3]} -> {ctx.getText()} -> {self.result[ctx]}')
 
     # logicSignal_name : reg_port_signal_id;
     def exitLogicSignal_name(self, ctx:iclParser.LogicSignal_nameContext):
@@ -172,7 +193,6 @@ class IclProcess(iclListener):
             self.result[ctx] = [operator, self.result[ctx.logic_expr_lvl2()],  self.result[ctx.logic_expr_lvl1()]]
         else:
             self.result[ctx] = self.result[ctx.logic_expr_lvl2()]
-        # print("exitLogic_expr_lvl1-X", ctx.getText(), "->", self.result[ctx])   
         
     # logic_expr_lvl2 : logic_expr_lvl3 ( ('&' | '|' | '^') logic_expr_lvl2 )? |
     #                                   ( ('&' | '|' | '^') logic_expr_lvl2 );    
@@ -186,7 +206,6 @@ class IclProcess(iclListener):
         else:
             operator = ctx.getChild(0).getText()
             self.result[ctx] = [operator, self.result[ctx.logic_expr_lvl2()]]
-        # print("exitLogic_expr_lvl2-X", ctx.getText(), "->", self.result[ctx])        
 
     # logic_expr_lvl3 : logic_expr_lvl4 ( ('==' | '!=') logic_expr_num_arg )?;
     def exitLogic_expr_lvl3(self, ctx:iclParser.Logic_expr_lvl3Context):
@@ -195,7 +214,6 @@ class IclProcess(iclListener):
             self.result[ctx] = [operator, self.result[ctx.logic_expr_lvl4()],  self.result[ctx.logic_expr_num_arg()]]
         else:
             self.result[ctx] = self.result[ctx.logic_expr_lvl4()]
-        # print("exitLogic_expr_lvl3-X", ctx.getText(), "->", self.result[ctx])
 
     # logic_expr_lvl4 : logic_expr_arg (',' logic_expr_lvl4 )?;
     def exitLogic_expr_lvl4(self, ctx:iclParser.Logic_expr_lvl4Context):
@@ -221,15 +239,16 @@ class IclProcess(iclListener):
     # logic_expr_num_arg : concat_number |  enum_name | '(' logic_expr_num_arg ')' ;            
     def exitLogic_expr_num_arg(self, ctx:iclParser.Logic_expr_num_argContext):
         if(ctx.concat_number()):
-                self.result[ctx] = ConcatSig(self.icl_instance, [self.result[ctx.concat_number()]], IclNumber)
+                self.result[ctx] = ConcatSig(self.icl_instance, [self.result[ctx.concat_number()]], CONCAT_NUMBER_T)
         if(ctx.enum_name()):
                 ##self.result[ctx] = self.result[ctx.enum_name()]
                 self.result[ctx] = EnumRef(self.icl_instance, self.result[ctx.enum_name()])
         if(ctx.logic_expr_num_arg()):
                 self.result[ctx] = self.result[ctx.logic_expr_num_arg()]
 
-
-
+    #vector_id : SCALAR_ID '[' (index | rangex) ']' ;
+    # index : integer_expr ;
+    # rangex : index ':' index ;
     def parse_port_name(self, ctx:iclParser.Port_nameContext, declaration: bool):
         sig = None
         if(ctx.SCALAR_ID()):
@@ -241,29 +260,43 @@ class IclProcess(iclListener):
                 number =  self.result[ctx.vector_id().index().integer_expr()].get_number()
                 sig = IclSignal(name, number)
             else:
-                index_l = self.result[ctx.vector_id().rangex().index(0).integer_expr()].get_number()
-                index_h = self.result[ctx.vector_id().rangex().index(1).integer_expr()].get_number()
-                sig = IclSignal(name, index_l, index_h)
+                index_left  = self.result[ctx.vector_id().rangex().index(0).integer_expr()].get_number()
+                index_right = self.result[ctx.vector_id().rangex().index(1).integer_expr()].get_number()
+                sig = IclSignal(name, index_left, index_right)               
+        else:
+            raise ValueError(f"Programming error")
 
         self.result[ctx] = sig
-        print(ctx.getText(), "->", self.result[ctx])
+        logging.debug(f'{inspect.stack()[0][3]} -> {ctx.getText()} -> {self.result[ctx]}')
+
+
+    # port_name : SCALAR_ID | vector_id ;
+    def exitPort_name(self, ctx:iclParser.Port_nameContext):
+        self.parse_port_name(ctx, 0)
+
+    # register_name : SCALAR_ID | vector_id ;
+    def exitRegister_name(self, ctx: iclParser.Register_nameContext):
+        self.parse_port_name(ctx, 1)
+
+    # reg_port_signal_id : SCALAR_ID | vector_id;
+    def exitReg_port_signal_id(self, ctx:iclParser.Reg_port_signal_idContext):
+        self.parse_port_name(ctx, 0)
     
-    def exitPort_name(self, ctx:iclParser.Port_nameContext):                    self.parse_port_name(ctx, 0)
-    def exitRegister_name(self, ctx: iclParser.Register_nameContext):           self.parse_port_name(ctx, 1)
-    def exitReg_port_signal_id(self, ctx:iclParser.Reg_port_signal_idContext):  self.parse_port_name(ctx, 0)
-    
+    # hier_port : (instance_name '.')+ port_name ;
     def exitHier_port(self, ctx:iclParser.Hier_portContext):
         item = self.result[ctx.port_name()]
         for index in range(ctx.getChildCount()):
             if (ctx.instance_name(index)):
                 item.add_hiearachy(ctx.instance_name(index).getText())
         self.result[ctx] = item
-        print("exitHier_port-X", ctx.getText(), "->", self.result[ctx])
+        logging.debug(f'{inspect.stack()[0][3]} -> {ctx.getText()} -> {self.result[ctx]}')
 
+    # signal : (number | reg_port_signal_id | hier_port ) ;
     def exitSignal(self, ctx:iclParser.SignalContext):
         self.result[ctx] = self.result[ctx.getChild(0)]
-        print("exitSignal-X", ctx.getText(), "->", self.result[ctx])
+        logging.debug(f'{inspect.stack()[0][3]} -> {ctx.getText()} -> {self.result[ctx]}')
 
+    # data_signal : '~'? signal ;
     def exitData_signal(self, ctx:iclParser.Data_signalContext):
         operator = ctx.getChild(0).getText()  
         if(operator == "~"):
@@ -271,75 +304,156 @@ class IclProcess(iclListener):
             self.result[ctx].negate() 
         else:
             self.result[ctx] = self.result[ctx.signal()]
-        print("exitData_signal-X", ctx.getText(), "->", self.result[ctx])
+        logging.debug(f'{inspect.stack()[0][3]} -> {ctx.getText()} -> {self.result[ctx]}')
 
-    def exitReset_signal(self, ctx): self.exitData_signal(ctx)
-    def exitScan_signal(self, ctx): self.exitData_signal(ctx)
-    def exitClock_signal(self, ctx): self.exitData_signal(ctx)   
-    def exitTck_signal(self, ctx): self.result[ctx] = self.result[ctx.signal()]
-    def exitTms_signal(self, ctx): self.result[ctx] = self.result[ctx.signal()]
-    def exitTrst_signal(self, ctx): self.result[ctx] = self.result[ctx.signal()]
-    def exitShiftEn_signal(self, ctx): self.result[ctx] = self.result[ctx.signal()]
-    def exitCaptureEn_signal(self, ctx): self.result[ctx] = self.result[ctx.signal()]
-    def exitUpdateEn_signal(self, ctx): self.result[ctx] = self.result[ctx.signal()]
+    # reset_signal : '~'? signal ;
+    def exitReset_signal(self, ctx):
+        self.exitData_signal(ctx)
 
-    def exitConcat_data_signal(self, ctx:iclParser.Concat_data_signalContext, type: str ="data"):
-        concat = []
+    # scan_signal : '~'? signal ;
+    def exitScan_signal(self, ctx):
+        self.exitData_signal(ctx)
+
+    # clock_signal : '~'? signal ;
+    def exitClock_signal(self, ctx):
+        self.exitData_signal(ctx)   
+
+    # tck_signal : signal ;
+    def exitTck_signal(self, ctx):
+        self.result[ctx] = self.result[ctx.signal()]
+
+    # tms_signal : signal ;
+    def exitTms_signal(self, ctx):
+        self.result[ctx] = self.result[ctx.signal()]
+
+    # trst_signal : signal ;
+    def exitTrst_signal(self, ctx):
+        self.result[ctx] = self.result[ctx.signal()]
+
+    # shiftEn_signal : signal ;
+    def exitShiftEn_signal(self, ctx):
+        self.result[ctx] = self.result[ctx.signal()]
+
+    # captureEn_signal : signal ;
+    def exitCaptureEn_signal(self, ctx):
+        self.result[ctx] = self.result[ctx.signal()]
+    
+    # updateEn_signal : signal ;
+    def exitUpdateEn_signal(self, ctx):
+        self.result[ctx] = self.result[ctx.signal()]
+
+    def universal_Concat_signal(self, ctx:iclParser.Concat_data_signalContext, concat_type: str):
+        concat: list[IclSignal, IclNumber] = []
+
         for child in ctx.getChildren():
             if (child.getText() != ","):
                 concat.append(self.result[child])
-        self.result[ctx] = concat
-        self.result[ctx] = ConcatSig(self.icl_instance, concat, type)
-        print("exitConcat_data_signal-X", ctx.getText(), "->", self.result[ctx])
 
-    def exitConcat_reset_signal(self, ctx): self.exitConcat_data_signal(ctx, "reset")        
-    def exitConcat_scan_signal(self, ctx): self.exitConcat_data_signal(ctx, "scan")        
-    def exitConcat_clock_signal(self, ctx): self.exitConcat_data_signal(ctx, "clock")        
-    def exitConcat_tck_signal(self, ctx): self.exitConcat_data_signal(ctx, "tck")        
-    def exitConcat_shiftEn_signal(self, ctx): self.exitConcat_data_signal(ctx, "shiften")        
-    def exitConcat_captureEn_signal(self, ctx): self.exitConcat_data_signal(ctx, "captureen")        
-    def exitConcat_updateEn_signal(self, ctx): self.exitConcat_data_signal(ctx, "updateen")        
-    def exitConcat_tms_signal(self, ctx): self.exitConcat_data_signal(ctx, "tms")        
-    def exitConcat_trst_signal(self, ctx): self.exitConcat_data_signal(ctx, "trst")        
+        self.result[ctx] = ConcatSig(self.icl_instance, concat, concat_type)
+        logging.debug(f'{inspect.stack()[0][3]} -> {ctx.getText()} -> {self.result[ctx]} - {concat_type}')
 
+    # concat_data_signal : data_signal ( ',' data_signal)*;  
+    def exitConcat_data_signal(self, ctx): 
+        self.universal_Concat_signal(ctx, CONCAT_DATA_T)
+   
+    # concat_reset_signal : (reset_signal | data_signal) ( ',' reset_signal | data_signal )*;   
+    def exitConcat_reset_signal(self, ctx):
+        self.universal_Concat_signal(ctx, CONCAT_RESET_T)        
+
+    # concat_scan_signal : (scan_signal | data_signal) ( ',' scan_signal | data_signal )*;
+    def exitConcat_scan_signal(self, ctx):
+        self.universal_Concat_signal(ctx, CONCAT_SCAN_T)        
+    
+    # concat_clock_signal : (clock_signal | data_signal)  ( ',' clock_signal | data_signal)*;
+    def exitConcat_clock_signal(self, ctx):
+        self.universal_Concat_signal(ctx, CONCAT_CLOCK_T)        
+
+    # concat_tck_signal : (tck_signal | data_signal) ( ',' tck_signal | data_signal)*;
+    def exitConcat_tck_signal(self, ctx):
+        self.universal_Concat_signal(ctx, CONCAT_TCK_T)        
+    
+    # concat_shiftEn_signal : (shiftEn_signal | data_signal) ( ',' shiftEn_signal | data_signal)* ;
+    def exitConcat_shiftEn_signal(self, ctx):
+        self.universal_Concat_signal(ctx, CONCAT_SE_T)        
+    
+    # concat_captureEn_signal : (captureEn_signal | data_signal) ( ',' captureEn_signal | data_signal )*;
+    def exitConcat_captureEn_signal(self, ctx):
+        self.universal_Concat_signal(ctx, CONCAT_CE_T)        
+    
+    # concat_updateEn_signal : (updateEn_signal | data_signal) ( ',' updateEn_signal | data_signal )*;
+    def exitConcat_updateEn_signal(self, ctx):
+        self.universal_Concat_signal(ctx, CONCAT_UE_T)        
+    
+    # concat_tms_signal : (tms_signal | data_signal) ( ',' tms_signal | data_signal)*;
+    def exitConcat_tms_signal(self, ctx):
+        self.universal_Concat_signal(ctx, CONCAT_TMS_T)        
+    
+    # concat_trst_signal : (trst_signal | data_signal) ( ',' trst_signal | data_signal )*;
+    def exitConcat_trst_signal(self, ctx):
+        self.universal_Concat_signal(ctx, CONCAT_TRST_T)        
+
+    # size : pos_int | '$' SCALAR_ID ;
     def exitSize(self, ctx:iclParser.SizeContext):
+        number: int
+
         if(ctx.pos_int()):
-            self.result[ctx] = int(ctx.pos_int().getText())
-        if(ctx.SCALAR_ID()):
-            self.result[ctx] = int(ctx.SCALAR_ID().strip("\""))
-        print("exitSize-X", self.result[ctx] ,"-X")
+            number = int(ctx.pos_int().getText())
+        elif(ctx.SCALAR_ID()):
+            parameter_name = ctx.SCALAR_ID().getText()
+            icl_number: IclNumber = self.get_paramter_ref_value(parameter_name)
+            number = int(icl_number.get_bin_str(), 2)
 
-    def exitSized_dec_num(self, ctx:iclParser.Sized_dec_numContext):
-        self.result[ctx] = IclNumber(ctx.UNSIZED_DEC_NUM().getText(), "dec", self.result[ctx.size()])
-        print("exitSized_dec_num-X", ctx.getText(), "->", self.result[ctx])
+        self.result[ctx] = number
+        logging.debug(f'{inspect.stack()[0][3]} -> {ctx.getText()} -> {self.result[ctx]}')
 
-    def exitSized_hex_num(self, ctx:iclParser.Sized_hex_numContext):
-        self.result[ctx] = IclNumber(ctx.UNSIZED_HEX_NUM().getText(), "hex", self.result[ctx.size()])
-        print("exitSized_hex_num-X", ctx.getText(), "->", self.result[ctx])
-
-    def exitSized_bin_num(self, ctx:iclParser.Sized_bin_numContext):
-        self.result[ctx] = IclNumber(ctx.UNSIZED_BIN_NUM().getText(), "bin", self.result[ctx.size()])
-        print("exitSized_bin_num-X", ctx.getText(), "->", self.result[ctx])
-
-
+    # sized_dec_num : size UNSIZED_DEC_NUM ;
+    # sized_hex_num : size UNSIZED_HEX_NUM ;
+    # sized_bin_num : size UNSIZED_BIN_NUM ;
+    # sized_number : sized_dec_num | sized_bin_num | sized_hex_num;
     def exitSized_number(self, ctx:iclParser.Sized_numberContext):
-        self.result[ctx] = self.result[ctx.getChild(0)]
+        number: IclNumber
 
+        if(ctx.sized_dec_num()):
+            number =  IclNumber(ctx.sized_dec_num().UNSIZED_DEC_NUM().getText(), "dec", self.result[ctx.sized_dec_num().size()])
+        elif(ctx.sized_hex_num()):
+            number = IclNumber(ctx.sized_hex_num().UNSIZED_HEX_NUM().getText(), "hex", self.result[ctx.sized_hex_num().size()])
+        elif(ctx.sized_bin_num()):
+            number = IclNumber(ctx.sized_bin_num().UNSIZED_BIN_NUM().getText(), "bin", self.result[ctx.sized_bin_num().size()])
+        else:
+            raise ValueError(f"Programming error, cxt -> {ctx.getText()}")
+            
+        self.result[ctx] = number
+        logging.debug(f'{inspect.stack()[0][3]} -> {ctx.getText()} -> {self.result[ctx]}')
+
+    # unsized_number : pos_int | UNSIZED_DEC_NUM | UNSIZED_BIN_NUM | UNSIZED_HEX_NUM ;
     def exitUnsized_number(self, ctx:iclParser.Unsized_numberContext):
-        if(ctx.pos_int()):
-            self.result[ctx] =  IclNumber(ctx.pos_int().getText(), "dec")
-        if(ctx.UNSIZED_DEC_NUM()):
-            self.result[ctx] =  IclNumber(ctx.UNSIZED_DEC_NUM().getText(), "dec")
-        if(ctx.UNSIZED_HEX_NUM()):
-            self.result[ctx] =  IclNumber(ctx.UNSIZED_HEX_NUM().getText(), "hex")
-        if(ctx.UNSIZED_BIN_NUM()):
-            self.result[ctx] =  IclNumber(ctx.UNSIZED_BIN_NUM().getText(), "bin")            
-        print("exitUnsized_number-", ctx.getText(), "->", self.result[ctx])
+        number: IclNumber
 
+        if(ctx.pos_int()):
+            number = IclNumber(ctx.pos_int().getText(), "dec")
+        elif(ctx.UNSIZED_DEC_NUM()):
+            number = IclNumber(ctx.UNSIZED_DEC_NUM().getText(), "dec")
+        elif(ctx.UNSIZED_HEX_NUM()):
+            number = IclNumber(ctx.UNSIZED_HEX_NUM().getText(), "hex")
+        elif(ctx.UNSIZED_BIN_NUM()):
+            number = IclNumber(ctx.UNSIZED_BIN_NUM().getText(), "bin")
+        else:  
+            raise ValueError(f"Programming error, cxt -> {ctx.getText()}")
+
+        self.result[ctx] = number
+        logging.debug(f'{inspect.stack()[0][3]} -> {ctx.getText()} -> {self.result[ctx]}')
+
+    # number : unsized_number | sized_number | integer_expr ;
+    def exitNumber(self, ctx:iclParser.NumberContext):
+        self.result[ctx] = self.result[ctx.getChild(0)]
+        logging.debug(f'{inspect.stack()[0][3]} -> {ctx.getText()} -> {self.result[ctx]}')
+
+    # integer_expr : integer_expr_lvl1 ;
     def exitInteger_expr(self, ctx:iclParser.Integer_exprContext):
         self.result[ctx] = self.result[ctx.integer_expr_lvl1()]
-        print("exitInteger_expr-", ctx.getText(), "->", self.result[ctx])
+        logging.debug(f'{inspect.stack()[0][3]} -> {ctx.getText()} -> {self.result[ctx]}')
 
+    # integer_expr_lvl1 : integer_expr_lvl2 ( ('+' | '-') integer_expr_lvl1 )? ;
     def exitInteger_expr_lvl1(self, ctx:iclParser.Integer_expr_lvl1Context):
         if(ctx.integer_expr_lvl1()):
             operator = ctx.getChild(1).getText()  
@@ -350,6 +464,7 @@ class IclProcess(iclListener):
         else:
             self.result[ctx] = self.result[ctx.integer_expr_lvl2()]
 
+    # integer_expr_lvl2 : integer_expr_arg (('*' | '/' | '%') integer_expr_lvl2 )? ;
     def exitInteger_expr_lvl2(self, ctx:iclParser.Integer_expr_lvl2Context):
         if(ctx.integer_expr_lvl2()):
             operator = ctx.getChild(1).getText()
@@ -361,9 +476,9 @@ class IclProcess(iclListener):
                 self.result[ctx] = self.result[ctx.integer_expr_arg()] % self.result[ctx.integer_expr_lvl2()]
         else:
             self.result[ctx] = self.result[ctx.integer_expr_arg()]
-        print("exitInteger_expr_lvl2-", ctx.getText(), "->", self.result[ctx])
+        logging.debug(f'{inspect.stack()[0][3]} -> {ctx.getText()} -> {self.result[ctx]}')
 
-
+    # integer_expr_arg : integer_expr_paren | pos_int | parameter_ref ;
     def exitInteger_expr_arg(self, ctx:iclParser.Integer_expr_argContext):
         if(ctx.pos_int()):
             self.result[ctx] =  IclNumber(ctx.pos_int().getText(), "dec")
@@ -371,12 +486,9 @@ class IclProcess(iclListener):
             self.result[ctx] = self.result[ctx.integer_expr_paren().integer_expr()]
         if(ctx.parameter_ref()):
             self.result[ctx] = self.record[ctx.parameter_ref()]
-        print("exitInteger_expr_arg-", ctx.getText(), "->", self.result[ctx])
+        logging.debug(f'{inspect.stack()[0][3]} -> {ctx.getText()} -> {self.result[ctx]}')
 
-    def exitNumber(self, ctx:iclParser.NumberContext):
-        self.result[ctx] = self.result[ctx.getChild(0)]
-        print("exitNumber-X", ctx.getText(), "->", self.result[ctx])
-
+    # concat_number : '~'? number (',' '~'? number)* ;
     def exitConcat_number(self, ctx:iclParser.Concat_numberContext):
         # First value
         if(ctx.getChild(0).getText() == "~"):
@@ -402,17 +514,18 @@ class IclProcess(iclListener):
             inv = 0
 
         self.result[ctx] = concat_number
-        print("exitConcat_number-X", ctx.getText(), "->", self.result[ctx])
+        logging.debug(f'{inspect.stack()[0][3]} -> {ctx.getText()} -> {self.result[ctx]}')
 
-    # Exit a parse tree produced by iclParser#concat_number_list.
+    # concat_number_list : concat_number ( '|' concat_number )* ;
     def exitConcat_number_list(self, ctx:iclParser.Concat_number_listContext):
         self.result[ctx] = []
         for index in range(ctx.getChildCount()):
             if (ctx.concat_number(index)):
                 self.result[ctx].append(self.result[ctx.concat_number(index)])
 
-        print("exitConcat_number_list-X", ctx.getText(), "->", self.result[ctx])
+        logging.debug(f'{inspect.stack()[0][3]} -> {ctx.getText()} -> {self.result[ctx]}')
 
+    # concat_string : (STRING | parameter_ref) (',' (STRING | parameter_ref) )* ;
     def exitConcat_string(self, ctx:iclParser.Concat_stringContext):
         self.result[ctx] = ""
         for index in range(ctx.getChildCount()):
@@ -428,14 +541,16 @@ class IclProcess(iclListener):
                 else:
                     self.result[ctx] += self.record[ctx.parameter_ref(index)]
 
-        print("exitConcat_string-X", ctx.getText(), "->", self.result[ctx])
+        logging.debug(f'{inspect.stack()[0][3]} -> {ctx.getText()} -> {self.result[ctx]}')
 
+    # parameter_value : concat_string | concat_number;
     def exitParameter_value(self, ctx:iclParser.Parameter_valueContext):
         self.result[ctx] = self.result[ctx.getChild(0)]
-        print("exitParameter_value-X", ctx.getText(), "->", self.result[ctx])
+        logging.debug(f'{inspect.stack()[0][3]} -> {ctx.getText()} -> {self.result[ctx]}')
         self.result["END"] = self.result[ctx]
 
 
+    # parameter_def : 'Parameter' parameter_name '=' parameter_value ';' ;
     def exitParameter_def(self, ctx:iclParser.Parameter_defContext):
         parameter_name = ctx.parameter_name().SCALAR_ID().getText()
         parameter_data = self.result[ctx.parameter_value()]
@@ -444,49 +559,48 @@ class IclProcess(iclListener):
         if(ctx.parentCtx.getRuleIndex() != iclParser.RULE_parameter_override):
             self.icl_instance.add_parameter(parameter_name, parameter_data)
 
-        print("exitParameter_def-X", ctx.getText(), "->", self.result[ctx])
+        logging.debug(f'{inspect.stack()[0][3]} -> {ctx.getText()} -> {self.result[ctx]}')
 
     def exitParameter_override(self, ctx:iclParser.Parameter_overrideContext):
         self.result[ctx] = self.result[ctx.getChild(0)]
-        print("exitParameter_override-X", ctx.getText(), "->", self.result[ctx])
+        logging.debug(f'{inspect.stack()[0][3]} -> {ctx.getText()} -> {self.result[ctx]}')
 
+    # localParameter_def : 'LocalParameter' parameter_name '=' parameter_value ';' ;
     def exitLocalParameter_def(self, ctx:iclParser.LocalParameter_defContext):
         parameter_name = ctx.parameter_name().SCALAR_ID().getText()
         parameter_data = self.result[ctx.parameter_value()]
-        self.result[ctx] = {parameter_name: parameter_data}
-
+        
         self.icl_instance.add_parameter(parameter_name, parameter_data)
 
-        print("exitLocalParameter_def-X", ctx.getText(), "->", parameter_data)
+        self.result[ctx] = {parameter_name: parameter_data}
+        logging.debug(f'{inspect.stack()[0][3]} -> {ctx.getText()} -> {self.result[ctx]}')
 
-
+    # parameter_ref : '$'(SCALAR_ID) ;
     def enterParameter_ref(self, ctx:iclParser.Parameter_refContext):
         parameter_name = ctx.SCALAR_ID().getText()
+        self.record[ctx] = self.get_paramter_ref_value(parameter_name)
+            
+        logging.debug(f'{inspect.stack()[0][3]} -> {ctx.getText()} -> {self.record[ctx]}')
 
+    def get_paramter_ref_value(self, parameter_name: str) -> IclNumber:
+        result:IclNumber = None
         if(self.icl_instance.get_parameter_override(parameter_name)):
-            self.record[ctx] = self.icl_instance.get_parameter_override(parameter_name)
+            result = self.icl_instance.get_parameter_override(parameter_name)
         elif(self.icl_instance.get_parameter(parameter_name)):
-            self.record[ctx] = self.icl_instance.get_parameter(parameter_name)
+            result = self.icl_instance.get_parameter(parameter_name)
         else:
-            if(parameter_name in self.start_icl_module["parameters"]):
-                lexer = iclLexer(InputStream(self.start_icl_module["parameters"][parameter_name]))
-            elif (parameter_name in self.start_icl_module["local_parameters"]):
-                lexer = iclLexer(InputStream(self.start_icl_module["local_parameters"][parameter_name]))
+            if(parameter_name in self.start_icl_module["parameters_parser_tree"]):
+                parser_tree = self.start_icl_module["parameters_parser_tree"][parameter_name]
+            elif (parameter_name in self.start_icl_module["local_parameters_parser_tree"]):
+                parser_tree = self.start_icl_module["local_parameters_parser_tree"][parameter_name]
             else:
                 raise ValueError(f"Reference to parameter {parameter_name} not found, in ICL module {self.icl_instance.get_name()}")
 
-            stream = CommonTokenStream(lexer)
-            parser = iclParser(stream)
-            tree = parser.module_item()
             my_listener = IclProcess("dummy", "dummy", "dummy")
-            my_listener.start_icl_module = self.start_icl_module;
             walker = ParseTreeWalker()
-            #print("enterParameter_ref X0", variable, self.params[variable])
-            walker.walk(my_listener, tree)
-            self.record[ctx] = my_listener.result["END"]
-        print("enterParameter_ref-X", ctx.getText(), "->", self.record[ctx])
-
-
+            walker.walk(my_listener, parser_tree)
+            result = my_listener.result["END"]
+        return result
 
 
     # dataRegister_def : 'DataRegister' dataRegister_name (';' | ( '{' dataRegister_item+ '}' ) ) ;
@@ -507,7 +621,7 @@ class IclProcess(iclListener):
     # dataRegister_refEnum : 'RefEnum' enum_name ';' ;
     # //For Selectable Data Register:
     # dataRegister_selectable : dataRegister_writeEnSource |
-    # dataRegister_writeDataSource;
+    #                           dataRegister_writeDataSource;
     # dataRegister_writeEnSource : 'WriteEnSource' '~'? data_signal ';' ;
     # dataRegister_writeDataSource : 'WriteDataSource' concat_data_signal ';' ;
     # // Addressable Data Register:
@@ -527,12 +641,132 @@ class IclProcess(iclListener):
     #             STRING |
     #             parameter_ref ;   
     def exitDataRegister_def(self, ctx:iclParser.DataRegister_defContext):
-        icl_range_item: IclSignal = self.result[ctx.dataRegister_name().register_name()]
-        icl_data_register = IclDataRegister(self.icl_instance, icl_range_item, ctx.getText())
+        data_reg: IclSignal = self.result[ctx.dataRegister_name().register_name()]       
+        reset_value: IclNumber | EnumRef = None
+        default_value: IclNumber | EnumRef = None
+        ref_enum:  str = None
+        attributes: list[IclAttribute] = []       
 
+        write_en : IclSignal = None
+        write_source : ConcatSig = None
+        address: int = None
+
+        select_able: bool = False
+        address_able: bool = False
+        callback_able: bool = False
+
+        for item in ctx.dataRegister_item():
+            if(item.dataRegister_type()):
+                if(item.dataRegister_type().dataRegister_selectable()):
+                    select_able = True
+                    temp = item.dataRegister_type().dataRegister_selectable()
+
+                    if(temp.dataRegister_writeEnSource()):
+                        if write_en is not None:
+                            raise ValueError(f"DataRegister has multiple WriteEnSource {ctx.getText()}")
+                        else:
+                            write_en = self.result[temp.dataRegister_writeEnSource().data_signal()]
+                            if(temp.dataRegister_writeEnSource().getChild(1).getText() == "~"):
+                                write_en = ~write_en
+
+                    elif(temp.dataRegister_writeDataSource()):
+                        if write_source is not None:
+                            raise ValueError(f"DataRegister has multiple writeDataSource {ctx.getText()}")
+                        else:
+                            write_source = self.result[temp.dataRegister_writeDataSource().concat_data_signal()]
+
+                elif(item.dataRegister_type().dataRegister_addressable()):
+                    address_able = True
+                    if address is not None:
+                        raise ValueError(f"DataRegister has multiple AddressValue {ctx.getText()}")
+                    else:
+                        address = self.result[item.dataRegister_type().dataRegister_addressable().dataRegister_addressValue().number()]
+                        address = address.get_number()
+
+                elif(item.dataRegister_type().dataRegister_writeCallBack()):
+                    callback_able = True
+                    raise ValueError(f"dataRegister_writeCallBack in {ctx.getText()}")
+                
+                elif(item.dataRegister_type().dataRegister_readCallBack()):
+                    callback_able = True
+                    raise ValueError(f"dataRegister_readCallBack in {ctx.getText()}")
+
+            elif(item.dataRegister_common()):
+                temp = item.dataRegister_common()
+                if(temp.attribute_def()):
+                    attribute_def = self.result[temp.attribute_def()]
+                    attributes.append(attribute_def)  
+
+                elif(temp.dataRegister_resetValue()):
+                    if reset_value is not None:
+                        raise ValueError(f"DataRegister has multiple reset values {ctx.getText()}")
+                    else:
+                        if temp.dataRegister_resetValue().enum_symbol():
+                            reset_value = EnumRef(self.icl_instance, temp.dataRegister_resetValue().enum_symbol().SCALAR_ID().getText())
+                        elif temp.dataRegister_resetValue().concat_number():
+                            reset_value: IclNumber = self.result[temp.dataRegister_resetValue().concat_number()]
+                        else:
+                            raise ValueError(f"Unexpected {ctx.getText()}")
+
+                elif(temp.dataRegister_defaultLoadValue()):
+                    if default_value is not None:
+                        raise ValueError(f"DataRegister has multiple reset values {ctx.getText()}")
+                    else:
+                        if temp.dataRegister_defaultLoadValue().enum_symbol():
+                            default_value = EnumRef(self.icl_instance, temp.dataRegister_defaultLoadValue().enum_symbol().SCALAR_ID().getText())
+                        elif temp.dataRegister_defaultLoadValue().concat_number():
+                            default_value: IclNumber = self.result[temp.dataRegister_defaultLoadValue().concat_number()]
+                        else:
+                            raise ValueError(f"Unexpected {ctx.getText()}")
+
+                elif(temp.dataRegister_refEnum()):
+                    if ref_enum is not None:
+                        raise ValueError(f"DataRegister has multiple RefEnum {ctx.getText()}")
+                    else:
+                        ref_enum = temp.dataRegister_refEnum().enum_name().getText()
+
+
+        """ 
+        logging.debug(data_reg)
+        logging.debug(reset_value)
+        logging.debug(default_value)
+        logging.debug(ref_enum)
+        logging.debug(attributes)
+        logging.debug(write_en)
+        logging.debug(write_source)
+        logging.debug(address)
+        logging.debug(ctx.getText())       
+        #input()
+        """
+
+        # Only one type is allowed
+        assert((select_able + address_able + callback_able) >= 0)
+
+        # Type of data register: selectable, addressable or callback
+        type_of_data_reg:str = None
+        if(select_able):
+            type_of_data_reg = "selectable"
+        elif(address_able):
+            type_of_data_reg = "addressable"
+        elif(callback_able):
+            type_of_data_reg = "callback"
+        else:
+            type_of_data_reg = "selectable"
+
+        icl_data_register = IclDataRegister(
+            self.icl_instance,
+            data_reg,
+            type_of_data_reg,
+            write_source,
+            write_en,
+            address,
+            ctx.getText()
+        )
+        self.result[ctx] = icl_data_register
+
+       
         self.icl_instance.add_icl_item(icl_data_register)
-
-        print("exitDataRegister_def-X", ctx.getText(), "->", icl_data_register)
+        logging.debug(f'{inspect.stack()[0][3]} -> {ctx.getText()} -> {self.result[ctx]}')
 
 
     # scanRegister_def : 'ScanRegister' scanRegister_name (';' |
@@ -575,10 +809,10 @@ class IclProcess(iclListener):
                     raise ValueError(f"ScanRegister has multiple default values {ctx.getText()}")
                 else:
                     if item.scanRegister_defaultLoadValue().enum_symbol():
-                        default_value = EnumRef(self.icl_instance, item.scanRegister_defaultLoadValue().enum_symbol().enum_value().getText())
+                        default_value = EnumRef(self.icl_instance, item.scanRegister_defaultLoadValue().enum_symbol().SCALAR_ID().getText())
                     elif item.scanRegister_defaultLoadValue().concat_number():
                         default_value = self.result[item.scanRegister_defaultLoadValue().concat_number()]
-                        default_value: ConcatSig = ConcatSig(self.icl_instance,[default_value], "number")
+                        default_value: ConcatSig = ConcatSig(self.icl_instance,[default_value], CONCAT_NUMBER_T)
                     else:
                         raise ValueError(f"Unexpected {ctx.getText()}")
                     
@@ -587,7 +821,7 @@ class IclProcess(iclListener):
                     raise ValueError(f"ScanRegister has multiple capture sources {ctx.getText()}")
                 else:
                     if item.scanRegister_captureSource().enum_symbol():
-                        capture_source = EnumRef(self.icl_instance, item.scanRegister_captureSource().enum_symbol().enum_value().getText())
+                        capture_source = EnumRef(self.icl_instance, item.scanRegister_captureSource().enum_symbol().SCALAR_ID().getText())
                     elif item.scanRegister_captureSource().concat_data_signal():
                         capture_source = self.result[item.scanRegister_captureSource().concat_data_signal()]
                     else:
@@ -598,10 +832,10 @@ class IclProcess(iclListener):
                     raise ValueError(f"ScanRegister has multiple reset values {ctx.getText()}")
                 else:
                     if item.scanRegister_resetValue().enum_symbol():
-                        reset_value = EnumRef(self.icl_instance, item.scanRegister_resetValue().enum_symbol().enum_value().getText())
+                        reset_value = EnumRef(self.icl_instance, item.scanRegister_resetValue().enum_symbol().SCALAR_ID().getText())
                     elif item.scanRegister_resetValue().concat_number():
                         reset_value: IclNumber = self.result[item.scanRegister_resetValue().concat_number()]
-                        reset_value: ConcatSig = ConcatSig(self.icl_instance,[reset_value], "number")
+                        reset_value: ConcatSig = ConcatSig(self.icl_instance,[reset_value], CONCAT_NUMBER_T)
                     else:
                         raise ValueError(f"Unexpected {ctx.getText()}")
                 
@@ -613,7 +847,9 @@ class IclProcess(iclListener):
 
         new_icl_item = IclScanRegister(self.icl_instance, scan_reg, attributes, scan_in_source, default_value, capture_source, reset_value, ref_enum, ctx.getText())
         self.icl_instance.add_icl_item(new_icl_item)
-        print("exitScanRegister_def-X", ctx.getText(), "->", new_icl_item)
+
+        self.result[ctx] = new_icl_item
+        logging.debug(f'{inspect.stack()[0][3]} -> {ctx.getText()} -> {self.result[ctx]}')
 
     # scanMux_def : 'ScanMux' scanMux_name 'SelectedBy' scanMux_select '{' scanMux_selection+ '}' ;
     # scanMux_name : reg_port_signal_id ;
@@ -632,7 +868,8 @@ class IclProcess(iclListener):
         new_icl_item = IclScanMux(self.icl_instance, ctx.getText(), scan_mux, scan_select, mux_selects)
         self.icl_instance.add_icl_item(new_icl_item)
 
-        print("exitScanMux_def-X", ctx.getText(), "->", new_icl_item)
+        self.result[ctx] = new_icl_item
+        logging.debug(f'{inspect.stack()[0][3]} -> {ctx.getText()} -> {self.result[ctx]}')
 
     # dataMux_def : 'DataMux' dataMux_name 'SelectedBy' dataMux_select '{' dataMux_selection+ '}' ;
     # dataMux_name : reg_port_signal_id ;
@@ -651,8 +888,8 @@ class IclProcess(iclListener):
         new_icl_item = IclDataMux(self.icl_instance, ctx.getText(), data_mux, data_select, mux_selects)
         self.icl_instance.add_icl_item(new_icl_item)
 
-        print("exitDataMux_def-X", ctx.getText(), "->", new_icl_item)
-
+        self.result[ctx] = new_icl_item
+        logging.debug(f'{inspect.stack()[0][3]} -> {ctx.getText()} -> {self.result[ctx]}')
 
     # instance_def : 'Instance' instance_name 'Of' (namespace_name? '::')?
     #                 module_name (';' | ( '{' instance_item* '}' ) ) ;
@@ -681,13 +918,12 @@ class IclProcess(iclListener):
         instances_names_in_module = self.start_icl_module["instances"].keys()
 
         if(instance_name not in instances_names_in_module):
-            print(instance_name)
-            print(instances_names_in_module)            
-            raise Exception("Instance in not in all modules data")
+            raise Exception(f"Instance: {instance_name} in not in all modules data: {instances_names_in_module}")
 
         module_scope = self.start_icl_module["instances"][instance_name][0]
         module_name = self.start_icl_module["instances"][instance_name][1]            
-        module_to_parse = self.all_icl_modules[module_scope][module_name]["data"]
+        parser_tree = self.all_icl_modules[module_scope][module_name]["module_parser_tree"]
+
         if(self.icl_instance.get_hier() == ""):
             instance_hier = instance_name
         else:
@@ -696,44 +932,88 @@ class IclProcess(iclListener):
         icl_eval_lis = IclProcess(instance_name, module_name, module_scope, instance_hier)
         icl_eval_lis.all_icl_modules = self.all_icl_modules
         icl_eval_lis.start_icl_module = self.all_icl_modules[module_scope][module_name]
+        icl_eval_lis.parsed_icl_modules = self.parsed_icl_modules
 
-        input_ports = []
-        attributes = []
-        parameters = []
+        module_idx = []
         for child in ctx.getChildren():
             if isinstance(child, iclParser.Instance_itemContext):
 
                 if(child.inputPort_connection()):
                     port_name: IclSignal  = self.result[child.inputPort_connection().inputPort_name().port_name()]
                     port_paths: ConcatSig = self.result[child.inputPort_connection().inputPort_source().getChild(0)]
-                    port_paths.set_type("unknown")
+                    port_paths.set_type(CONCAT_UNKNOWN_T)
 
                     connection = {port_name: port_paths}
                     icl_eval_lis.icl_instance.add_connection(connection)                  
-                    input_ports.append((port_name, port_paths))
+
                 elif(child.allowBroadcast_def()):
-                    pass
+                    raise ValueError(f"Broadcast not supported in: {ctx.getText()}")
+
                 elif(child.attribute_def()):
                     name, attribure = self.result[child.getChild(0)].popitem()
                     icl_eval_lis.icl_instance.add_attribute(name, attribure)
-                    input_ports.append((name, attribure))
+
                 elif(child.parameter_override()):
                     name, parameter = self.result[child.getChild(0)].popitem()                  
                     icl_eval_lis.icl_instance.add_parameter_override(name, parameter)
-                    parameters.append((name, parameter))
+                    module_idx.append(f"{name}_{parameter}")
+
+                elif(child.instance_addressValue()):
+                    raise ValueError(f"Instance address not supported in: {ctx.getText()}")
+
                 else:
                     raise Exception("Unknown instance item")
-                
-        lexer = iclLexer(InputStream(module_to_parse))           
-        stream = CommonTokenStream(lexer)
-        parser = iclParser(stream)
-        tree = parser.module_def()
 
-        walker = ParseTreeWalker()
-        walker.walk(icl_eval_lis, tree)
+        if(parallel_on):
+            # Parallel
+            logging.info(f"Adding ICL instance: {instance_name} for parrael processing ")
+            self.processes.append((icl_eval_lis, parser_tree))
+        else:
+            ## Single
+            module_idx.sort()
+            module_idx = ",".join(module_idx)
+            module_idx = f"{module_scope}-{module_name}-{module_idx}"
+            if(not (module_idx in self.parsed_icl_modules)):
+                logging.info(f"Staring to process ICL instance {instance_name} in {self.icl_instance.get_hier()}")
 
+                walker = ParseTreeWalker()
+                walker.walk(icl_eval_lis, parser_tree)
+                self.icl_instance.add_icl_item(icl_eval_lis.icl_instance)
+                self.parsed_icl_modules[module_idx] = icl_eval_lis.icl_instance
+            else:
+                logging.info(f"Reusing processed ICL instance for {instance_name} in {self.icl_instance.get_hier()}, reused IclInstace {module_idx}")
 
-        self.icl_instance.add_icl_item(icl_eval_lis.icl_instance)
+                def mod_instance(inst, hier):
+                    for x in inst.icl_items:
+                        if(isinstance(x, IclInstance)):
+                            x.hier = hier
+                            mod_instance(x, hier + "." + x.name)
+                        else:
+                            x.hier = hier
+
+                tmp = self.parsed_icl_modules[module_idx].connections
+                self.parsed_icl_modules[module_idx].connections = []
+                modified_instance: IclInstance = deepcopy(self.parsed_icl_modules[module_idx])
+                self.parsed_icl_modules[module_idx].connections = tmp
+
+                modified_instance.name = instance_name
+                modified_instance.hier = instance_hier
+                modified_instance.attributes = icl_eval_lis.icl_instance.attributes
+                modified_instance.connections = icl_eval_lis.icl_instance.connections
+                modified_instance.parameters_override = icl_eval_lis.icl_instance
+                mod_instance(modified_instance, modified_instance.hier)
+                self.icl_instance.add_icl_item(modified_instance)
+
+    # module_def : 'Module' module_name '{' module_item* '}' ;
+    def exitModule_def(self, ctx:iclParser.Module_defContext):
+        if(parallel_on):
+            logging.info(f"Staring to parallel process all ICL instance in {self.icl_instance.get_hier()}")
+            from concurrent.futures import ThreadPoolExecutor
+            with ThreadPoolExecutor() as executor:
+                results = list(executor.map(process_instance, self.processes))
+                for tmp in results:
+                    self.icl_instance.add_icl_item(tmp)
+            logging.info(f"Fnished parallel processing all ICL instance in {self.icl_instance.get_hier()}")
 
     #module_item :   useNameSpace_def |
     #                port_def |
@@ -908,7 +1188,7 @@ class IclProcess(iclListener):
                         raise ValueError(f"More than one reference' {ctx.getText()}")    
                                         
             icl_item = IclDataOutPort(self.icl_instance, ctx.getText(), port, attributes, source, enable, ref_enum)
-                        
+
         # toShiftEnPort_def : 'ToShiftEnPort' toShiftEnPort_name (';' | ( '{' toShiftEnPort_items* '}' ) ) ;
         # toShiftEnPort_name : port_name ;
         # toShiftEnPort_items : attribute_def | toShiftEnPort_source ;  
@@ -940,7 +1220,7 @@ class IclProcess(iclListener):
                 if (item.toUpdateEnPort_source()):
                     if not source:
                         source = self.result[item.toUpdateEnPort_source().updateEn_signal()]
-                        source = ConcatSig(self.icl_instance, [source], "updateen")
+                        source = ConcatSig(self.icl_instance, [source], CONCAT_UE_T)
                     else:
                         raise ValueError(f"More than one source' {ctx.getText()}")
                     
@@ -959,7 +1239,7 @@ class IclProcess(iclListener):
                 if item.toCaptureEnPort_source():
                     if not source:
                         source = self.result[item.toCaptureEnPort_source().captureEn_signal()]
-                        source = ConcatSig(self.icl_instance, [source], "to_capture_en")
+                        source = ConcatSig(self.icl_instance, [source], CONCAT_CE_T)
                     else:
                         raise ValueError(f"More than one source' {ctx.getText()}")      
                     
@@ -1224,6 +1504,8 @@ class IclProcess(iclListener):
         else:   
             raise ValueError(f"Unknown port definition {ctx.getText()}")
 
+        self.icl_instance.add_port_to_sequence(type(icl_item), icl_item.get_ports()[0])
+
         self.result[ctx] = icl_item
         if icl_item:
             port = icl_item.ports[0]
@@ -1238,7 +1520,7 @@ class IclProcess(iclListener):
             else:
                 self.icl_instance.add_icl_item(icl_item)
 
-            print(f"exit port {ctx.getChild(0).getText()} -> {icl_item, port_name, attributes}")      
+            logging.debug(f'{inspect.stack()[0][3]} -> {ctx.getText()} -> {self.result[ctx]}')
 
     # scanInterface_def : 'ScanInterface' scanInterface_name '{' scanInterface_item+ '}' ;
     # scanInterface_name : SCALAR_ID;
@@ -1254,6 +1536,7 @@ class IclProcess(iclListener):
     #                         defaultLoad_def ;
     # defaultLoad_def : 'DefaultLoadValue' concat_number ';' ;
     def exitScanInterface_def(self, ctx):
+        return
         interface_name = ctx.scanInterface_name().SCALAR_ID().getText()     
         interface_attributes: list[IclAttribute] = []
         interface_ports: list[IclSignal] = []
@@ -1326,8 +1609,9 @@ class IclProcess(iclListener):
         scan_interface = IclScanInterface(self.icl_instance, interface_name, interface_attributes, interface_ports, chains, ctx.getText())
         input("ADD")
         self.icl_instance.add_icl_item(scan_interface)
+        self.result[ctx] = scan_interface
 
-        print("exitScanInterface_def", ctx.getText(), "->", scan_interface)
+        logging.debug(f'{inspect.stack()[0][3]} -> {ctx.getText()} -> {self.result[ctx]}')
 
 
     # oneHotScanGroup_def : 'OneHotScanGroup' oneHotScanGroup_name '{' oneHotScanGroup_item+ '}' ;
@@ -1345,8 +1629,9 @@ class IclProcess(iclListener):
             
         hot_scan = IclOneHotScanGroup(self.icl_instance, icl_sig, selectee, ctx.getText())
         self.icl_instance.add_icl_item(hot_scan)
+        self.result[ctx] = hot_scan
 
-        print("exitOneHotDataGroup_def-X", ctx.getText(), "->", hot_scan)
+        logging.debug(f'{inspect.stack()[0][3]} -> {ctx.getText()} -> {self.result[ctx]}')
 
 
     # oneHotDataGroup_def : 'OneHotDataGroup' oneHotDataGroup_name '{' oneHotDataGroup_item+ '}' ;
@@ -1357,22 +1642,25 @@ class IclProcess(iclListener):
     # oneHotDataGroup_portSource : 'Port' concat_data_signal ';' ;
     def exitOneHotDataGroup_def(self, ctx:iclParser.OneHotDataGroup_defContext):
         icl_sig: IclSignal = self.result[ctx.oneHotDataGroup_name().reg_port_signal_id()]
-        selectee : list = []
+
+        one_hot_data = IclOneHotDataGroup(self.icl_instance, icl_sig, ctx.getText())
+        self.icl_instance.add_icl_item(one_hot_data)
 
         for item in ctx.oneHotDataGroup_item():
             if item.instance_def():
-                pass # TODO
+                raise ValueError(f"Instance not supported in: {ctx.getText()}")
             elif item.dataRegister_def():
-                pass # TODO
+                data_reg: IclDataRegister = self.result[item.dataRegister_def()]
+                data_reg.set_mux(one_hot_data)
+                one_hot_data.add_selectee(data_reg)
+
             elif item.oneHotDataGroup_portSource():
-                pass # TODO
+                raise ValueError(f"Post source not supported in: {ctx.getText()}")
             else:
                 raise ValueError(f"Non valid state")
 
-        hot_scan = IclOneHotDataGroup(self.icl_instance, icl_sig, selectee, ctx.getText())
-        self.icl_instance.add_icl_item(hot_scan)
-
-        print("exitOneHotDataGroup_def-X", ctx.getText(), "->", hot_scan)
+        self.result[ctx] = one_hot_data
+        logging.debug(f'{inspect.stack()[0][3]} -> {ctx.getText()} -> {self.result[ctx]}')
 
 
     # attribute_def : 'Attribute' attribute_name ('=' attribute_value )? ';' ;
@@ -1386,4 +1674,40 @@ class IclProcess(iclListener):
         # For exitPort_def
         self.module_item_attributes.append(self.result[ctx])
 
-        print("attribute_def-X", ctx.getText(), "->", self.result[ctx])
+        logging.debug(f'{inspect.stack()[0][3]} -> {ctx.getText()} -> {self.result[ctx]}')
+
+    # nameSpace_def : 'NameSpace' namespace_name? ';' ;
+    # useNameSpace_def : 'UseNameSpace' namespace_name? ';' ;
+    def exitUseNameSpace_def(self, ctx:iclParser.UseNameSpace_defContext):
+        # Collected by icl_pre_process
+        pass
+
+    # clockMux_def : 'ClockMux' clockMux_name 'SelectedBy' clockMux_select '{' clockMux_selection+ '}' ;
+    # clockMux_name : reg_port_signal_id ;
+    # clockMux_select : concat_data_signal ;
+    # clockMux_selection : concat_number_list':' concat_clock_signal ';' ;
+    def exitClockMux_def(self, ctx:iclParser.ClockMux_defContext):
+        raise ValueError(f'Not supported -> {inspect.stack()[0][3]} -> {ctx.getText()}')
+
+    # accessLink_def : accessLink1149_def | AccessLinkGeneric_def ;
+    # 
+    # // Actual parser will need to add gated semantic predicate here or rule will
+    # // match 1149 definition as well
+    # AccessLinkGeneric_def : 'AccessLink' SPACE SCALAR_ID SPACE 'Of' SPACE SCALAR_ID SPACE? ;
+    # fragment AccessLinkGeneric_block :'{' ( AccessLinkGeneric_block |
+    #                                         AccessLinkGeneric_text | SPACE | STRING )* 
+    #                                   '}' ;
+    # fragment AccessLinkGeneric_text : [^{}"\t\n\r ]+; // Not used in ANTLR parser,
+    # accessLink_genericID : SCALAR_ID;
+    # accessLink1149_def : 'AccessLink' accessLink_name 'Of' ('STD_1149_1_2001' | 'STD_1149_1_2013')'{' 'BSDLEntity' bsdlEntity_name ';'bsdl_instr_ref+ '}' ;
+    # accessLink_name : SCALAR_ID;
+    # bsdlEntity_name : SCALAR_ID ;
+    # bsdl_instr_ref : bsdl_instr_name '{' bsdl_instr_selected_item+ '}' ;
+    # bsdl_instr_name : SCALAR_ID ;
+    # bsdl_instr_selected_item : 'ScanInterface''{' (accessLink1149_ScanInterface_name ';')+ '}' |
+    #                             ('ActiveSignals''{'(accessLink1149_ActiveSignal_name ';')+ '}' ) ;
+    # accessLink1149_ActiveSignal_name : reg_port_signal_id ;
+    # accessLink1149_ScanInterface_name : instance_name('.' scanInterface_name)? ;
+    def exitAccessLink_def(self, ctx:iclParser.AccessLink_defContext):
+        raise ValueError(f'Not supported -> {inspect.stack()[0][3]} -> {ctx.getText()}')
+
