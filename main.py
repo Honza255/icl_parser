@@ -42,5 +42,6 @@ if __name__ == '__main__':
         ijtag.iApply()
         print(ijtag.getiApplyVectors()) 
 
-        ## Open a window wih simplified graph of IJTAG network
-        ijtag.plot_network_graph()
+        # Draws IJTAG scan network into a svg image
+        ijtag.draw_scan_graph_pydot()
+        #ijtag.display_scan_graph_mathplot()

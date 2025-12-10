@@ -11,10 +11,12 @@ from .icl_register_model import *
 
 class Ijtag:
 
+    top_module = "top" 
+    top_module_scope = "root"
     icl_instance: IclInstance = None
-    icl_register_model: IclRegisterModel = None
     icl_retargeter:IclRetargeting = None
     ijtag_reg_model: IclRegisterModel = None
+
     # Crete IJAG model from ICL files
     # top_name :      Top ICL module name
     # icl_files:      ICL files
@@ -51,10 +53,6 @@ class Ijtag:
         self.ijtag_reg_model = IclRegisterModel(self.icl_instance)
         self.icl_retargeter = self.ijtag_reg_model.retargeter
  
-    # Plotes IJTAG network graphis into a window
-    def plot_network_graph(self):
-        self.ijtag_reg_model.plotGraph()
-
     def iWrite(self, reg_or_port: str, value: str):
         pattern = r'^([A-Za-z]{1}[.A-Za-z0-9_]*)(?:[\[(](\d+)(?::(\d+))?[\])])*'
         match =  re.search(pattern, reg_or_port)
@@ -127,6 +125,100 @@ class Ijtag:
     def getiApplyVectors(self) -> list[jtagStep]:
         return self.ijtag_reg_model.getiApplyVectors()
 
+    # Draws IJTAG scan network into a svg image
+    def draw_scan_graph_pydot(self, filename=""):
+
+        if (not filename):
+            if (self.top_module):
+                filename = self.top_module
+            else:
+                filename = self.top_module_scope + "_" + self.top_module
+        
+        # Initialize pydot digraph
+        import pydot       
+        dot = pydot.Dot(graph_type='digraph', label=filename, labelloc="t")
+
+        # Convert ICL graph nodes into pydot
+        icl_graph = self.ijtag_reg_model.create_scan_graph(squish_registers=True)
+        for node, data in icl_graph.nodes(data=True):
+            node_label = str(node)
+            
+            # Get attributes from node
+            fill_color = data.get("color", "lightgray")
+            shape = data.get("node_shape", "rect")
+
+            # Quotes inside label ensure text displays correctly
+            p_node = pydot.Node(
+                f'"{str(node)}"', 
+                shape=shape, 
+                style="filled", 
+                fillcolor=fill_color,
+                label=f'"{node_label}"', 
+                fontname="Arial",
+                fontsize="10"
+            )
+            
+            dot.add_node(p_node)
+
+        # Convert ICL graph edges into pydot
+        for u, v, data in icl_graph.edges(data=True):
+            # Quotes inside label ensure text displays correctly       
+            p_edge = pydot.Edge(
+                f'"{str(u)}"', 
+                f'"{str(v)}"',
+            )
+            dot.add_edge(p_edge)
+
+        # Add legend
+        # Create a separate subgraph cluster just for the legend
+        legend_cluster = pydot.Subgraph(graph_name="cluster_key")
+        legend_cluster.set_label("Legend:")
+
+        # Define the legend items: (InternalName, DisplayLabel, Shape, Color)
+        legend_items = [
+            ("leg_port", "Scan Port", "oval", "lightgreen"),
+            ("leg_reg",  "Register",    "rect", "red"), 
+            ("leg_mux",  "Multiplexer", "invtrapezium", "grey")
+        ]
+
+        previous_node_id = None
+
+        for leg_id, leg_label, leg_shape, leg_color in legend_items:
+            # Create the visual node
+            leg_node = pydot.Node(
+                leg_id,
+                label=leg_label,
+                shape=leg_shape,
+                style="filled",
+                fillcolor=leg_color
+            )
+            legend_cluster.add_node(leg_node)
+
+            # Stack them vertically using invisible edges
+            if previous_node_id:
+                edge_invis = pydot.Edge(previous_node_id, leg_id, style="invis")
+                legend_cluster.add_edge(edge_invis)
+            
+            previous_node_id = leg_id
+
+        dot.add_subgraph(legend_cluster)
+
+        print(f"Generating IJTAG scan network into a svg image: {filename}")
+        dot.write_svg(filename + ".svg")
+
+    # Displays IJTAG network graphis into a window
+    def display_scan_graph_mathplot(self):
+        import matplotlib.pyplot as plt        
+
+        icl_graph = self.ijtag_reg_model.create_scan_graph(squish_registers=True)      
+        pos = nx.kamada_kawai_layout(icl_graph)
+
+        # Exctract color attribute for each node
+        node_colors = [data['color'] if "color" in data else "gray" for node, data in icl_graph.nodes(data=True)]
+
+        nx.draw(icl_graph, pos, with_labels=True, node_size=1500, node_color=node_colors, font_size=10, font_weight="bold")
+        plt.show()
+
 
     # Inner functions
     def __pre_process_icl_files(self, icl_files: list[str]) -> dict[str, dict]:
@@ -160,28 +252,24 @@ class Ijtag:
         return all_icl_modules 
 
     def __process_icl_module(self, all_icl_modules: dict[str, dict], module_name: str) -> IclInstance:
-        instance_name = "top" 
-        scope = "root"
-
         pattern = re.compile(r'(?:([\w]+)::)?([\w]+)')
         m = pattern.match(module_name)
-        print(module_name)       
-        print(m)
         if m:
-            scope = m.group(1) if m.group(1) is not None else "root"
+            self.top_module_scope = m.group(1) if m.group(1) is not None else "root"
             module_name = m.group(2)
-            print(module_name, scope)
+            #print(module_name, self.top_module_scope)
+        self.top_module = module_name
 
-        icl_process = IclProcess(instance_name, module_name, scope)           
+        print(f"Starting to process: {self.top_module_scope}::{self.top_module}")
+        
+        icl_process = IclProcess(self.top_module, self.top_module, self.top_module_scope)           
         icl_process.all_icl_modules = all_icl_modules
-        icl_process.start_icl_module = all_icl_modules[scope][module_name]
+        icl_process.start_icl_module = all_icl_modules[self.top_module_scope][module_name]
 
-        parser_tree = all_icl_modules[scope][module_name]["module_parser_tree"]
+        parser_tree = all_icl_modules[self.top_module_scope][module_name]["module_parser_tree"]
         walker = ParseTreeWalker()
         walker.walk(icl_process, parser_tree)
 
-        icl_process.icl_instance.check()
-        
-        #print(tree.toStringTree(recog=parser))
+        icl_process.icl_instance.check()       
 
         return icl_process.icl_instance

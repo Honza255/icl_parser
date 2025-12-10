@@ -225,7 +225,7 @@ class IclRegisterModel():
         #print(self.get_main_expression("u_nvm_atc_cut_10.wdata_0068"),"-> u_nvm_atc_cut_10.wdata_0068")
         #print(self.get_main_expression("u_nvm_atc_cut_10.rst_n_0000"),"-> u_nvm_atc_cut_10.rst_n_0000")
 
-        self.icl_graph = self.create_scan_path()
+        self.icl_graph = self.create_scan_graph()
         # self.plotGraph()
 
         #sccs = nx.strongly_connected_components(self.icl_graph)
@@ -243,18 +243,35 @@ class IclRegisterModel():
         #    out_nodes = [succ for succ in self.icl_graph.successors(node)]
         #    print(f'{node} - Inputs: {in_nodes}, Ooutputs: {out_nodes}')      
 
-        last_scan_port_nodes = []
+        self.last_scan_port_nodes = []
+        self.first_scan_port_nodes = []      
+        self.graph_last_scan_port_nodes = []
+        self.graph_first_scan_port_nodes = []                
         for node, degree in self.icl_graph.out_degree():
             try:
                 node_type = self.icl_graph.nodes[node]["icl_type"]
                 if (node_type == "scan_port" and degree == 0):
-                    last_scan_port_nodes.append(node)
+                    self.last_scan_port_nodes.append(node)
+                    self.graph_last_scan_port_nodes.append(self.icl_graph.nodes[node])
             except:
                 pass
-        print(last_scan_port_nodes)     
+        for node, degree in self.icl_graph.in_degree():
+            try:
+                node_type = self.icl_graph.nodes[node]["icl_type"]
+                if (node_type == "scan_port" and degree == 0):
+                    self.first_scan_port_nodes.append(node)
+                    self.graph_first_scan_port_nodes.append(self.icl_graph.nodes[node])                    
+            except:
+                pass
+
+        print(self.first_scan_port_nodes)     
+        print(self.last_scan_port_nodes)     
               
-        for last_node in last_scan_port_nodes:
+        for last_node in self.last_scan_port_nodes:
             self.traverse_iterative(last_node, last_node, self.icl_graph)
+
+        print(self.first_scan_port_nodes)     
+        print(self.last_scan_port_nodes)     
 
 
         #for node in self.icl_graph:
@@ -262,7 +279,7 @@ class IclRegisterModel():
 
         self.retargeter = self.create_retageter(self.icl_graph)
 
-    def create_scan_path(self) -> nx.DiGraph:
+    def create_scan_graph(self, squish_registers = False) -> nx.DiGraph:
         icl_graph: nx.DiGraph = nx.DiGraph()
         eval_list = self.icl_instance.list_instances()
 
@@ -275,22 +292,31 @@ class IclRegisterModel():
                 icl_item: IclItem
                 node_type: str = "Unknown"
                 node_color: str = "Unknown"
+                node_shape: str = "rect"
 
                 if(type(icl_item) in [IclScanInPort, IclScanOutPort] ):
                     node_type = "scan_port"   
-                    node_color = "green"
+                    node_color = "lightgreen"
+                    node_shape = "oval"
         
                 if(type(icl_item) in [IclScanMux] ):
                     node_type = self.SCAN_MUX_TYPE   
-                    node_color = "blue"
+                    node_color = "grey"
+                    node_shape = "invtrapezium"
        
                 if(type(icl_item) in [IclScanRegister] ):
                     node_type = self.SCAN_REG_TYPE  
                     node_color = "red"
+                    node_shape = "rect"
 
                 if(type(icl_item) == IclScanMux):
                     for node in icl_item.get_all_named_indexes():
-                        icl_graph.add_node(node, icl_type=node_type, color=node_color, mux=1, icl_item=icl_item)
+                        icl_graph.add_node(node,
+                            icl_type=node_type,
+                            color=node_color,
+                            mux=1,
+                            node_shape=node_shape,                            
+                            icl_item=icl_item)
 
                     idx = 0
                     for a,b, expr_smt, expr_py in icl_item.get_all_connections():
@@ -300,7 +326,13 @@ class IclRegisterModel():
                         #input()
 
                         link = "sel_{}_{}".format(idx, b)
-                        icl_graph.add_node(link, icl_type="mux_sel", color="lightblue", expr_smt=self.trace_to_primaries(expr_smt), expr_py=self.trace_to_primaries(expr_py), icl_item=icl_item)
+                        icl_graph.add_node(link,
+                            icl_type="mux_sel",
+                            color="lightblue",
+                            node_shape="rect",
+                            expr_smt=self.trace_to_primaries(expr_smt),
+                            expr_py=self.trace_to_primaries(expr_py),
+                            icl_item=icl_item)
                         icl_graph.add_edge(a, link)
                         icl_graph.add_edge(link, b) 
                         idx += 1
@@ -309,19 +341,27 @@ class IclRegisterModel():
                     for recieving_connection in icl_item.get_all_named_indexes():
                         to_point = recieving_connection
                         for from_point in self.get_element_driver(recieving_connection):
-                            icl_graph.add_node(to_point, icl_type=node_type, color=node_color, icl_item=icl_item)
+                            icl_graph.add_node(to_point,
+                                icl_type=node_type,
+                                color=node_color,
+                                node_shape=node_shape,
+                                icl_item=icl_item)
                             if(from_point != self.IMPLICIT_SOURCE):
                                 icl_graph.add_edge(from_point, to_point)
 
-                #  Normal case
                 if(type(icl_item) in [IclScanRegister]):
                     regs = icl_item.get_all_named_indexes()
                     first = regs[0]
                     last  = regs[-1]
-                    #regs  = [first, last]
+                    if squish_registers:
+                        regs  = [first, last]
 
                     for reg in regs:
-                        icl_graph.add_node(reg, icl_type=node_type, color=node_color, icl_item=icl_item)
+                        icl_graph.add_node(reg,
+                            icl_type=node_type,
+                            color=node_color,
+                            node_shape=node_shape,
+                            icl_item=icl_item)
 
                     for idx, reg in enumerate(regs):
                         if(reg != last):
@@ -767,31 +807,6 @@ class IclRegisterModel():
         # Replace Symbol('...') with '...'
         return re.sub(r"Symbol\('([^']+)'\)", r"\1", expression_str)
         
-    def plotGraph(self):
-        import matplotlib.pyplot as plt        
-
-        icl_graph = self.icl_graph
-        assert(icl_graph)
-
-        #print(icl_graph)
-        # Spring layout
-        #pos = nx.spring_layout(icl_graph)
-        # You can try other layouts like:
-        # pos = nx.circular_layout(icl_graph)
-        pos = nx.kamada_kawai_layout(icl_graph)
-        # pos = nx.spectral_layout(icl_graph)
-
-        # Extracting the color attribute for each node
-        node_colors = [data['color'] if "color" in data else "gray" for node, data in icl_graph.nodes(data=True)]
-
-        nx.draw(icl_graph, pos, with_labels=True, node_size=1500, node_color=node_colors, font_size=10, font_weight="bold")
-
-        edge_labels = nx.get_edge_attributes(icl_graph, 'sel')
-        nx.draw_networkx_edge_labels(icl_graph, pos, edge_labels=edge_labels)
-
-        #nx.draw(icl_graph, with_labels=True)
-        plt.show()  # Display the graph
-
     def create_retageter(self, scan_path_graph: nx.DiGraph):
 
         # Extract all scan reg. nodes that pariticipate in scan path reconfiguration

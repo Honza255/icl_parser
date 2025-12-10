@@ -26,7 +26,7 @@ It can also partially retarget data to scan chains.
 - python -m unittest tests.test_icl_syntax_3.TestIclSyntax3
 
 ## Python dependencies
-- pip install antlr4-python3-runtime==4.7.2 networkx[default] sympy z3-solver matplotlib cocotb cocotb-bus
+- pip install antlr4-python3-runtime==4.7.2 networkx[default] sympy z3-solver matplotlib cocotb cocotb-bus pydot
 
 ## Useful Paper Links
 - [IJTAG Standard (IEEE 1687-2014)](https://ieeexplore.ieee.org/document/6974961)
@@ -44,3 +44,6 @@ It can also partially retarget data to scan chains.
 - [Adaptive Retargeting](https://github.com/abraralaa92/adaptive_retargeting)
 - [Structural SAT Retargeting](https://github.com/abraralaa92/Structural_SAT_Retargeting)
 - [mast-opensource](https://gricad-gitlab.univ-grenoble-alpes.fr/portolam/mast-opensource)
+
+## Example of generated scan graph
+![Scan graph example](./other/doc/img/TrapOrFlap.svg)
