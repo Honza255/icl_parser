@@ -403,12 +403,13 @@ class IclRetargeting:
 
         cnf_other_init = []
         cnf_other_declare = []
+        smt2_other = ""
         if(other):
             for item, state in other.items():
                 cnf_other_init.append(item if state == 1 else "(not {})".format(item))
                 cnf_other_declare.append("(declare-const {0} Bool)\n".format(item))
-            smt2_init += "".join(cnf_other_declare) + "\n" 
-            smt2_init += "(assert (and {}))\n".format(" ".join(cnf_other_init))
+            smt2_other += "".join(cnf_other_declare) + "\n" 
+            smt2_other += "(assert (and {}))\n".format(" ".join(cnf_other_init))
 
         for step, solvers in self.solvers.items():
             solver = solvers["solver"]
@@ -418,16 +419,16 @@ class IclRetargeting:
 
             cnf_end = []
             cnf_declare = []
-            
-            modded_end_state = self.mod_reg(end_state, step+1)
-            for reg_name, state in modded_end_state.items():
-                cnf_end.append(reg_name if state[0] == "1" else  "(not {})".format(reg_name))
-                cnf_declare.append("(declare-const {0} Bool)\n".format(reg_name))          
-            smt2_end = "".join(cnf_declare) + "\n" 
+            smt2_end = ""
+            if(end_state):
+                modded_end_state = self.mod_reg(end_state, step+1)
+                for reg_name, state in modded_end_state.items():
+                    cnf_end.append(reg_name if state[0] == "1" else  "(not {})".format(reg_name))
+                    cnf_declare.append("(declare-const {0} Bool)\n".format(reg_name))          
+                smt2_end = "".join(cnf_declare) + "\n" 
+                smt2_end += "(assert (and {}))\n".format(" ".join(cnf_end))
 
-            smt2_end += "(assert (and {}))\n".format(" ".join(cnf_end))            
-
-            clause = smt2_init + smt2_end
+            clause = smt2_init + smt2_other + smt2_end
             clause = clause.replace('.', '_')
             with open(f"{current_dir}/tmp/init_end_smt2.txt", "w") as f:
                 f.write(clause)

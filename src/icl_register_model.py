@@ -875,44 +875,6 @@ class IclRegisterModel():
         for _ ,reg in self.data_registers.items():
             reg.reset()
 
-    def iWrite(self, name: str, value: int):
-        print(f"iWrite {name} {value}")
-
-        if(name in self.scan_registers):
-            scan_register: IclScanRegister = self.scan_registers[name]
-            scan_register.set_next_value(value)
-            scan_register.set_next_iapply()
-        elif(name in self.data_registers): 
-            data_register: IclDataRegister = self.data_registers[name]
-            data_register.set_next_value(value)
-            data_register.set_next_write_iapply()       
-        else:
-            raise ValueError("iWrite register: {} not found in ICL register model".format(name))
-
-    def iRead(self, name: str, value: int):
-        print(f"iRead {name} {value}")
-
-        if(name in self.scan_registers):
-            scan_register: IclScanRegister = self.scan_registers[name]
-
-            # TODO: For now we assume all data bits need to be read
-            scan_register.set_read_bits((1 << scan_register.scan_reg_size) - 1)
-
-            scan_register.set_expected_bits(value)
-            scan_register.set_next_iapply()
-        elif(name in self.data_registers): 
-            data_register: IclDataRegister = self.data_registers[name]
-
-            # TODO: For now we assume all data bits need to be read
-            data_register.set_read_bits((1 << data_register.data_reg_size) - 1)
-
-            data_register.set_expected_bits(value)
-            data_register.set_next_read_iapply()       
-        else:
-            raise ValueError("iRead register: {} not found in ICL register model".format(name))
-        
-
-
     def iApply(self) -> bool:
         print("iApply")
         self.jtag_steps = []
@@ -930,7 +892,7 @@ class IclRegisterModel():
             scan_reg: IclScanRegister = scan_reg
             reg_bits:list[str] = scan_reg.get_all_named_indexes()
             size = len(reg_bits) - 1
-            direction:bool = scan_reg.scan_reg.get_direction()
+            direction:bool = scan_reg.icl_name.get_direction()
             for idx, reg_bit in enumerate(reg_bits):
                 reg_bit = reg_bit.replace('.', '_')
                 network_start[reg_bit] = scan_reg.current_value.get_bin_bit_str(size - idx) if direction else scan_reg.current_value.get_bin_bit_str(idx)
@@ -939,7 +901,9 @@ class IclRegisterModel():
                 #    print(reg_bit, idx, scan_reg, network_start[reg_bit])
 
                 if(scan_reg.is_in_next_iapply()):
-                    network_end[reg_bit] = scan_reg.next_value.get_bin_bit_str(size - idx) if direction else scan_reg.next_value.get_bin_bit_str(idx)
+                    next_bit = scan_reg.next_value.get_bin_bit_str(size - idx) if direction else scan_reg.next_value.get_bin_bit_str(idx)
+                    if(next_bit not in ["x", "X"]):
+                        network_end[reg_bit] = next_bit
                     # print(reg_bit, idx, reg, network_start[reg_bit], "->", network_end[reg_bit])
                     network_other[f"sel_group_{scan_reg.get_name_with_hier()}"] = 1
                     
@@ -1065,7 +1029,6 @@ class IclRegisterModel():
                     data_reg: IclDataRegister = self.icl_instance.get_icl_item_name(self.remove_trailing_numbers(read_bit))
                     expected_value : IclNumber = data_reg.get_expected_bits()
                     bits_to_read : IclNumber = data_reg.get_bits_to_read()
-
                     if(bits_to_read.get_bin_bit_str(icl_item_idx) == "1"):
                         bits_to_read.set_bit(0, icl_item_idx)
                         data_reg_read_vector.append(expected_value.get_bin_bit_str(icl_item_idx))
@@ -1087,7 +1050,7 @@ class IclRegisterModel():
             final_read_vector = []
             for idx, test_reg_bit in enumerate(test_reg_read_vector):
                 data_reg_bit = data_reg_read_vector[idx]
-                if(test_reg_bit == "X"):
+                if(test_reg_bit in ["X", "x"]):
                     final_read_vector.append(data_reg_bit)
                 elif(test_reg_bit in ["1"]):
                     final_read_vector.append(test_reg_bit)
@@ -1095,6 +1058,8 @@ class IclRegisterModel():
                 elif(test_reg_bit in ["0"]):
                     final_read_vector.append(test_reg_bit)
                     assert(data_reg_bit != 1)
+                else:
+                    raise RuntimeError(f"Programming error -> {test_reg_bit}")
 
             final_read_vector = "".join(final_read_vector)
             jtag_step.exp_data = final_read_vector
@@ -1113,7 +1078,7 @@ class IclRegisterModel():
                 # print(reg_name, number, int(vector_string[idx]))
                 if(reg_name in self.scan_registers):
                     self.scan_registers[reg_name].set_current_bit(int(vector_string[idx]), int(number))
-                    self.scan_registers[reg_name].set_next_bit(int(vector_string[idx]), int(number))
+                    #self.scan_registers[reg_name].set_next_bit(int(vector_string[idx]), int(number))
                 else:
                     raise ValueError(f"Register name: {reg_name}, not found")
                 idx += 1
@@ -1124,6 +1089,7 @@ class IclRegisterModel():
         for _ ,reg in self.scan_registers.items():
             reg: IclScanRegister = reg
             reg.disable_next_iapply()
+            reg.next_value.set_to_unknown()
 
         for _ ,reg in self.data_registers.items():
             reg: IclDataRegister = reg

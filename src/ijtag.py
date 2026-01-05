@@ -17,6 +17,8 @@ class Ijtag:
     icl_retargeter:IclRetargeting = None
     ijtag_reg_model: IclRegisterModel = None
 
+    _IREAD_IWRITE_PATTERN = re.compile(r'^([A-Za-z][.A-Za-z0-9_]*)(?:[\[(](\d+)(?::(\d+))?[\])])*')
+
     # Crete IJAG model from ICL files
     # top_name :      Top ICL module name
     # icl_files:      ICL files
@@ -52,66 +54,38 @@ class Ijtag:
         self.icl_instance = self.__process_icl_module(all_icl_modules, top_module_name)
         self.ijtag_reg_model = IclRegisterModel(self.icl_instance)
         self.icl_retargeter = self.ijtag_reg_model.retargeter
- 
-    def iWrite(self, reg_or_port: str, value: str):
-        pattern = r'^([A-Za-z]{1}[.A-Za-z0-9_]*)(?:[\[(](\d+)(?::(\d+))?[\])])*'
-        match =  re.search(pattern, reg_or_port)
-        if (not match):
-            raise ValueError(f"Bad name: {reg_or_port} passed tp iWrite ")
 
-        only_name = match.group(1)        
-        left_idx = match.group(2)
-        right_idx = match.group(3)
+    def iWrite(self, reg_or_port: str, value: str = ""):
+        icl_item, replacement_list, icl_number = self._prepare_icl_op(reg_or_port, value, "iWrite")
 
-        print(only_name, left_idx, right_idx)
-        if(left_idx or right_idx):
-            raise NotImplementedError(f"Indexing iWrite value ({value}) is not implemented")
-
-        icl_item = self.icl_instance.get_icl_item_name(only_name)  
-        if(not (type(icl_item) in [IclDataRegister, IclScanRegister])):
-            raise NotImplementedError(f"iWrite is not supported for {reg_or_port} of type {type(icl_item)} in current script")
-
-        if(value):
-            if(value[:2] == "0x"):
-                raise NotImplementedError(f"iWrite with hex value ({value}) is not implemented")
-            elif(value[:2] == "0b"):
-                raise NotImplementedError(f"iWrite with binary value ({value}) is not implemented")
-            elif(all(char in "0123456789" for char in value)):
-                self.ijtag_reg_model.iWrite(only_name, int(value))
-            else:
-                raise NotImplementedError(f"{value} is probably an enum, enum is not currently supported")
+        # Set apply state
+        if isinstance(icl_item, IclScanRegister):
+            icl_item.set_next_iapply()
         else:
-            raise NotImplementedError(f"iWrite without value is not implemented")
-        
+            icl_item.set_next_write_iapply()
+
+        # Update values
+        for num_idx, vec_idx in enumerate(replacement_list):
+            bit_val = icl_number.get_bit(num_idx).get_bin_str()
+            icl_item.next_value.set_bit(bit_val, vec_idx)
 
     def iRead(self, reg_or_port: str, value: str = ""):
-        pattern = r'^([A-Za-z]{1}[.A-Za-z0-9_]*)(?:[\[(](\d+)(?::(\d+))?[\])])*'
-        match =  re.search(pattern, reg_or_port)
-        if (not match):
-            raise ValueError(f"Bad name: {reg_or_port} passed tp iWrite ")
+        icl_item, replacement_list, icl_number = self._prepare_icl_op(reg_or_port, value, "iRead")
 
-        only_name = match.group(1)        
-        left_idx = match.group(2)
-        right_idx = match.group(3)
-
-        if(left_idx or right_idx):
-            raise NotImplementedError(f"Indexing iRead value ({value}) is not implemented")
-
-        icl_item = self.icl_instance.get_icl_item_name(only_name)  
-        if(not (type(icl_item) in [IclDataRegister, IclScanRegister])):
-            raise NotImplementedError(f"iRead is not supported for {reg_or_port} of type {type(icl_item)} in current script")
-        
-        if(value):
-            if(value[:2] == "0x"):
-                raise NotImplementedError(f"iRead with hex value ({value}) is not implemented")
-            elif(value[:2] == "0b"):
-                raise NotImplementedError(f"iRead with binary value ({value}) is not implemented")
-            elif(all(char in "0123456789" for char in value)):
-                self.ijtag_reg_model.iRead(only_name, int(value))
-            else:
-                raise NotImplementedError(f"{value} is probably an enum, enum is not currently supported")
+        # Set apply state
+        if isinstance(icl_item, IclScanRegister):
+            icl_item.set_next_iapply()
         else:
-            raise NotImplementedError(f"iRead without value is not implemented")      
+            icl_item.set_next_read_iapply()
+
+        # TODO: For now we assume all data bits need to be read
+        all_bits_mask = (1 << icl_item.get_vector_size()) - 1
+        icl_item.bits_to_read.set_value(all_bits_mask)
+
+        # Update expected data
+        for num_idx, vec_idx in enumerate(replacement_list):
+            bit_val = icl_number.get_bit(num_idx).get_bin_str()
+            icl_item.expected_data.set_bit(bit_val, vec_idx)
 
     def iApply(self):
         self.ijtag_reg_model.iApply()
@@ -205,6 +179,7 @@ class Ijtag:
 
         print(f"Generating IJTAG scan network into a svg image: {filename}")
         dot.write_svg(filename + ".svg")
+        #dot.write_png(filename + ".png")
 
     # Displays IJTAG network graphis into a window
     def display_scan_graph_mathplot(self):
@@ -273,3 +248,69 @@ class Ijtag:
         icl_process.icl_instance.check()       
 
         return icl_process.icl_instance
+
+    def _extract_value(self, value):
+        if(value):
+            if(value[:2] == "0x"):
+                icl_number = IclNumber(value[2:], "hex")
+            elif(value[:2] == "0b"):
+                icl_number = IclNumber(value[2:], "bin")
+            elif(all(char in "0123456789" for char in value)):
+                icl_number = IclNumber(value, "dec")
+            else:
+                raise NotImplementedError(f"{value} is probably an enum, enum is not currently supported")
+        else:
+            icl_number = IclNumber("x", "bin")
+        print(f"value: {value} -> {icl_number}")
+
+        return icl_number
+
+    def _prepare_icl_op(self, reg_or_port: str, value: str, op_name: str):
+        """Shared logic to parse input, fetch the ICL item, and prepare indices."""
+        match = self._IREAD_IWRITE_PATTERN.search(reg_or_port)
+        if not match:
+            raise ValueError(f"Bad name: {reg_or_port} passed to {op_name}")
+
+        only_name, left_idx, right_idx = match.groups()
+        
+        icl_item = self.icl_instance.get_icl_item_name(only_name)
+        if not isinstance(icl_item, (IclDataRegister, IclScanRegister)):
+            raise NotImplementedError(
+                f"{op_name} is not supported for {reg_or_port} of type {type(icl_item)} in current script"
+            )
+
+        replacement_list = []
+        if(not left_idx and not right_idx):
+            replacement_list = list(range(icl_item.get_vector_size()))
+            if(icl_item.icl_name.get_direction()):
+                replacement_list.reverse()
+
+        elif(left_idx and not right_idx):
+            left_idx = int(left_idx)
+            replacement_list = [left_idx]
+
+        elif(right_idx and not left_idx):
+            right_idx = int(right_idx)
+            replacement_list = [right_idx]
+
+        elif(left_idx and right_idx):
+            left_idx = int(left_idx)
+            right_idx = int(right_idx)
+
+            if(left_idx >= right_idx):
+                while(left_idx >= right_idx):
+                    replacement_list.append(left_idx)
+                    left_idx = left_idx - 1
+            else:
+                while(left_idx <= right_idx):
+                    replacement_list.append(left_idx)
+                    left_idx = left_idx + 1
+        replacement_list.reverse()
+
+        icl_number = self._extract_value(value)
+        icl_number.resize(len(replacement_list))
+
+        print(f"{op_name} {reg_or_port} {value} -> {icl_item.get_name_with_hier()} {icl_number}")
+        
+        return icl_item, replacement_list, icl_number
+    

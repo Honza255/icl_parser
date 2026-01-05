@@ -91,8 +91,12 @@ class IclNumber:
 
         # Remove symbols
         source = in_value
-        for remove_char in "_' DdHhBb":
-            source = source.replace(remove_char, "")
+        if(value_type in ["dec", "bin"]):
+            for remove_char in "_' DdHhBb":
+                source = source.replace(remove_char, "")
+        else: # hex
+            for remove_char in "_' Hh":
+                source = source.replace(remove_char, "")
 
         # Allowed symbols
         allowed_symbols = "-Xx0123456789AaBbCcDdEeFf"
@@ -176,7 +180,7 @@ class IclNumber:
 
     def get_icl_size(self):
         return self.icl_size
-    
+
     def get_bit_size(self):
         return self.bit_size    
     
@@ -197,19 +201,38 @@ class IclNumber:
         if self.sized_number():
             self.r_number = self.r_number & ((1 << self.icl_size)-1)
 
-                               
+    def set_to_unknown(self):
+            self.r_number = 0
+            if(self.icl_size != -1):
+                self.x_number = (1 << self.icl_size) - 1
+            else:
+                self.x_number = (1 << self.bit_size) - 1
+
     def set_bit(self, value: int, index: int):
         if((index >= self.icl_size) and (self.icl_size != -1)):
             raise ValueError("Index {} is bigger than size {}".format(index, self.icl_size))
         else:
-            if value not in (0, 1):
-                raise ValueError("The bit value must be 0 or 1.")
+            if(isinstance(value, str)):
+                if(value in ["x", "X"]):
+                    value = -1
+                elif(value in ["1", "0"]):
+                    value = int(value)
+                else:
+                    raise ValueError(f"Unexpected value -> {value}, only expected string values are ['X', 'x', '1', '0']")
+
+            if value not in (0, 1, -1):
+                raise ValueError("The bit value must be 0, 1 or -1")
+
             mask = ~(1 << index)
             self.r_number &= mask
             self.x_number &= mask
-            self.r_number = self.r_number | (value << index)     
 
-    def get_bit(self, index):
+            if(value != -1):
+                self.r_number = self.r_number | (value << index)
+            else:
+                self.x_number = self.x_number | (1 << index)
+
+    def get_bit(self, index) -> "IclNumber":
         if((index >= self.icl_size) and (self.icl_size != -1)):
             raise ValueError("Index {} is bigger than size {}".format(index, self.icl_size))
         else:
@@ -941,7 +964,7 @@ class IclScanRegister(IclItem):
         super().__init__(instance, scan_reg.get_name(), instance.get_hier(), instance.get_hier(), ctx)
 
         # Inital values
-        self.scan_reg = scan_reg
+        self.icl_name = scan_reg
         self.in_attributes: list[IclAttribute] = in_attributes
         self.in_scan_in_source: IclSignal = in_scan_in_source
         self.in_default_value: ConcatSig | EnumRef = in_default_value
@@ -1022,10 +1045,10 @@ class IclScanRegister(IclItem):
         return self.capture_source
     
     def get_all_named_indexes(self) -> list[str]:
-        return self.get_item_all_named_indexes(self.scan_reg)
+        return self.get_item_all_named_indexes(self.icl_name)
     
     def get_all_indexes(self) -> list[int]:
-        return self.get_item_all_indexes(self.scan_reg)
+        return self.get_item_all_indexes(self.icl_name)
     
     def get_msb_index(self) -> int:
         return self.get_all_indexes()[0]
@@ -1034,10 +1057,10 @@ class IclScanRegister(IclItem):
         return self.get_all_indexes()[-1]
 
     def get_named_msb(self) -> str:
-        return self.get_item_all_named_indexes(self.scan_reg)[0]
+        return self.get_item_all_named_indexes(self.icl_name)[0]
 
     def get_named_lsb(self) -> str:
-        return self.get_item_all_named_indexes(self.scan_reg)[-1]
+        return self.get_item_all_named_indexes(self.icl_name)[-1]
         
     def get_scanin_named_index(self) -> str:
         scan_in = self.get_signal_all_named_indexes(self.instance, [self.scan_in])

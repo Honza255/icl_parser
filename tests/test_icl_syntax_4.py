@@ -19,13 +19,14 @@ class TestIclSyntax4(unittest.TestCase):
         module_name = "BasicSCB"
         icl_files = ICL_BENCHMARKS[module_name]
         ijtag = Ijtag(module_name, icl_files, [current_dir])
-    
+        ijtag.draw_scan_graph_pydot()
+
     # OK
     def test_process_icl_Mingle(self):
         module_name = "Mingle"
         icl_files = ICL_BENCHMARKS[module_name]
         ijtag = Ijtag(module_name, icl_files, [current_dir])
-    
+        ijtag.draw_scan_graph_pydot()
         
     #def test_process_icl_TreeBalanced(self):
     #    module_name = "TreeBalanced"
@@ -37,6 +38,7 @@ class TestIclSyntax4(unittest.TestCase):
         module_name = "TreeFlat"
         icl_files = ICL_BENCHMARKS[module_name]
         ijtag = Ijtag(module_name, icl_files, [current_dir])
+        ijtag.draw_scan_graph_pydot()
 
     #def test_process_icl_TreeFlat_Ex(self):
     #    module_name = "TreeFlat_Ex"
@@ -64,6 +66,7 @@ class TestIclSyntax4(unittest.TestCase):
         module_name = "p22810"
         icl_files = ICL_BENCHMARKS[module_name]
         ijtag = Ijtag(f"{module_name}::M0", icl_files, [current_dir])
+        ijtag.draw_scan_graph_pydot()
 
     #def test_process_icl_p34392(self):
     #    module_name = "p34392"
@@ -101,6 +104,7 @@ class TestIclSyntax4(unittest.TestCase):
         module_name = "N17D3"
         icl_files = ICL_BENCHMARKS[module_name]
         ijtag = Ijtag(f"{module_name}", icl_files, [current_dir])
+        ijtag.draw_scan_graph_pydot()
 
     # Too slow       
     #def test_process_icl_N32D6(self):
@@ -137,6 +141,7 @@ class TestIclSyntax4(unittest.TestCase):
         module_name = "TrapOrFlap"
         icl_files = ICL_BENCHMARKS[module_name]
         ijtag = Ijtag(f"{module_name}", icl_files, [current_dir])
+        ijtag.draw_scan_graph_pydot()
 
     ##########
     # Standard    
