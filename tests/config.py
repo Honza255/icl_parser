@@ -80,12 +80,14 @@ ICL_BENCHMARKS = {
 
 class IJTAGInternalDriver(BusDriver):
     # Mandatory abstract names for the internal interface
-    _needed_signals = ["tck", "ce", "se", "ue", "si", "so", "sel"]
+    _needed_signals: list[str] = ["tck", "ce", "se", "ue", "si", "so", "sel"]
 
     def __init__(self, entity, clock, signals, optional_signals=None):
         missing = [s for s in self._needed_signals if s not in signals]
         if missing:
              raise ValueError(f"IJTAGInternalDriver Error: Map missing {missing}")
+
+        self._observables: list[str] = []
 
         self._signals = signals
         self._optional_signals = optional_signals if optional_signals else {}
@@ -102,6 +104,12 @@ class IJTAGInternalDriver(BusDriver):
         if hasattr(self.bus, "rst"):
             self.bus.rst.value = 0 # Assume Active Low (inactive)
 
+    # Set elements (variables/signals/register ) to be observed in simulation after each step
+    # Example:          
+    #    driver.set_observable_elements(["SR_0.u_reg", "SR_1.u_reg"])
+    def set_observable_elements(self, observables: list[str]):
+        self._observables = observables
+    
     async def reset_instrument(self):
         if hasattr(self.bus, "rst"):
             await Timer(5, "ns")
@@ -112,38 +120,50 @@ class IJTAGInternalDriver(BusDriver):
         else:
             raise ValueError("Requested instrument reset, but 'rst' signal is not mapped.")
 
-    async def apply_ijtag_steps(self, ijtag_steps: list[jtagStep]):
+    async def apply_ijtag_steps(self, ijtag_steps: list[jtagStep]):       
+        print(f"--------------------------------------------------------------------")
         for step in ijtag_steps:
-            act_out_data = await self.write_read_register(step.in_data)
-            
-            # print("ce_mux", self.entity.SR.ce_mux.value )
-            # print("SR_0", self.entity.SR_0.u_reg.value )
-            # print("SR_1", self.entity.SR_1.u_reg.value )
-            # print("X", self.entity.X.value )
-            # print("SREG1.SR", self.entity.SREG1.SR.u_reg.value )
-            # print("SREG1.SR", self.entity.SREG1.SR.u_reg.value )
-            # print("SIB_10.SR", self.entity.SIB_10.SR.u_reg.value )
-            # print("SIB_23.SR", self.entity.SIB_23.SR.u_reg.value )
-            # print("SIB_24.SR", self.entity.SIB_24.SR.u_reg.value )
-            # print("SIB_11.SR", self.entity.SIB_11.SR.u_reg.value )
-            # print("SIB_12.SR", self.entity.SIB_12.SR.u_reg.value )
-            # print("SCB1.SR", self.entity.SCB1.SR.u_reg.value )
-            # print("WI_3.reg8.SR", self.entity.WI_3.reg8.SR.u_reg.value )
-            # print("WI_4.reg8.SR", self.entity.WI_4.reg8.SR.u_reg.value )
+            out_data = await self.write_read_register(step.in_data)
 
-            print(step, "length", len(step.in_data))
-            print(step, "act", act_out_data)
-            print(step, "exp", step.exp_data)
-            assert(len(step.in_data) == len(act_out_data))
-            
-            modified_act_out_data = ""
+            # If expected data has bit with x, mask this bit in actual data from DUT
+            # In order to compare expected data and data from DUT
+            masked_out_data = ""
             for idx, bit in enumerate(step.exp_data):
                 if(bit == "X"):
-                    modified_act_out_data = f"{modified_act_out_data}X"
+                    masked_out_data = f"{masked_out_data}X"
                 else:
-                    modified_act_out_data = f"{modified_act_out_data}{act_out_data[idx]}"
-            print(step, "acc", modified_act_out_data)
-            assert(modified_act_out_data == step.exp_data)
+                    masked_out_data = f"{masked_out_data}{out_data[idx]}"
+
+            length = len(step.in_data)
+            print(f"Sim. - Step: {step.step},       DUT act. data in  ({step.tdi_port}) ({step.type_of_chain}): {length}b'{step.in_data}")
+            print(f"Sim. - Step: {step.step},       DUT act. data out ({step.tdo_port}) ({step.type_of_chain}): {length}b'{out_data}")
+            print(f"Sim. - Step: {step.step}, solver    exp. data on  ({step.tdo_port}) ({step.type_of_chain}): {length}b'{step.exp_data}")
+            print(f"Sim. - Step: {step.step}, mask. DUT act. data on  ({step.tdo_port}) ({step.type_of_chain}): {length}b'{masked_out_data}")
+
+            # Prints DUT values of observable variables/signals/register/... in each step            
+            for observable in self._observables:
+                obj = getattr(self.entity, observable)
+                print(f"Sim. - Step: {step.step}, Simulator spy on: {observable} -> DUT value: {obj.value}")
+
+            # Check actual vs expected scan chain data
+            assert(len(step.in_data) == len(out_data))
+            if(masked_out_data != step.exp_data):
+
+                class bcolors:
+                    OKGREEN = '\033[92m'
+                    FAIL = '\033[91m'
+                    ENDC = '\033[0m'
+
+                for idx, _ in enumerate(step.in_data_names):
+                    tmp = f"Bit [{step.in_data_names[idx]}/{step.read_data_bit_names[idx]}] - act. {masked_out_data[idx]} vs exp. {step.exp_data[idx]}"
+                    if(masked_out_data[idx] ==  step.exp_data[idx]):
+                        print(f"{bcolors.OKGREEN}{tmp}{bcolors.ENDC}")
+                    else:
+                        print(f"{bcolors.FAIL}{tmp}{bcolors.ENDC}")
+                        
+                raise ValueError(f"Mismatch -> Expected data ({step.exp_data}), actual data ({masked_out_data}), step: {step.step}")
+            
+            print(f"--------------------------------------------------------------------")
 
     async def write_read_register(self, in_vector: str) -> str:
 
@@ -167,7 +187,7 @@ class IJTAGInternalDriver(BusDriver):
         for i in reversed(in_vector):
             assert(i in ["1", "0"])
             self.bus.si.value = 1 if i == "1" else 0
-            print(type(self.bus.si.value), self.bus.si.value,  i)
+            #print(type(self.bus.si.value), self.bus.si.value,  i)
             await RisingEdge(self.clock)
             read_val = f"{self.bus.so.value}{read_val}"
             await FallingEdge(self.clock)
