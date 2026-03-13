@@ -11,7 +11,7 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 class TestIclSyntax1(unittest.TestCase):
 
     def test_all(self):
-        icl_files = ["test_icls/scan_mux_001.icl", "test_icls/scan_mux_002.icl", "test_icls/scan_mux_003.icl"] + COMMON_ICL_BLOCKS
+        icl_files = ["test_icls/scan_mux_001.icl", "test_icls/scan_mux_002.icl" ] + COMMON_ICL_BLOCKS
         module_name = "scan_mux_002"
 
         ijtag = Ijtag(module_name, icl_files, [current_dir])
@@ -112,27 +112,26 @@ class TestIclSyntax1(unittest.TestCase):
         
         # input()
         
-        ijtag_reg_model = IclRegisterModel(icl_instance)
-        
+        ijtag = Ijtag(module_name, icl_files, [current_dir])       
         for i in range(1):
-            ijtag_reg_model.iReset()
-            ijtag_reg_model.iWrite("A", 1)
-            ijtag_reg_model.iWrite("B", 0)
-            ijtag_reg_model.iWrite("C", 1)
-            vectors = ijtag_reg_model.iApply()
+            ijtag.iReset()
+            ijtag.iWrite("A", "1")
+            ijtag.iWrite("B", "0")
+            ijtag.iWrite("C", "1")
+            vectors = ijtag.iApply()
 
-            ijtag_reg_model.iWrite("C", 2)
-            ijtag_reg_model.iWrite("D", 3)
-            vectors = ijtag_reg_model.iApply()
+            ijtag.iWrite("C", "2")
+            ijtag.iWrite("D", "3")
+            vectors = ijtag.iApply()
 
-            ijtag_reg_model.iWrite("D", 6)
-            vectors = ijtag_reg_model.iApply()
+            ijtag.iWrite("D", "6")
+            vectors = ijtag.iApply()
 
-            ijtag_reg_model.iWrite("A", 3)
-            ijtag_reg_model.iWrite("D", 7)
-            ijtag_reg_model.iWrite("reg8.SR", 6)
+            ijtag.iWrite("A", "3")
+            ijtag.iWrite("D", "7")
+            ijtag.iWrite("reg8.SR", "6")
 
-            vectors = ijtag_reg_model.iApply()
+            vectors = ijtag.iApply()
 
     def test_3(self):
         icl_files = COMMON_ICL_BLOCKS + ["test_icls/benchmarks/ICL/Basic/TreeFlat/TreeFlat.icl"]

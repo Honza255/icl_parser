@@ -70,6 +70,7 @@ async def TrapOrFlap_simple_test(dut):
     # Reset DUT
     ###########
     await driver.reset_instrument()
+    ijtag.iReset()
 
     # Write and read to scan register
     #################################
