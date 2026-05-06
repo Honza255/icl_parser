@@ -11,23 +11,23 @@ from .icl_register_model import *
 
 class Ijtag:
 
-    top_module = "top" 
-    top_module_scope = "root"
-    icl_instance: IclInstance = None
-    icl_retargeter:IclRetargeting = None
-    ijtag_reg_model: IclRegisterModel = None
-
     _IREAD_IWRITE_PATTERN = re.compile(r'^([A-Za-z][.A-Za-z0-9_]*)(?:[\[(](\d+)(?::(\d+))?[\])])*')
 
     # Crete IJAG model from ICL files
     # top_name :      Top ICL module name
     # icl_files:      ICL files
     # iclude_folders: Where to look for ICL files without absolute path
-    def __init__(self, top_module_name: str,  icl_files: list[str], iclude_folders: list[str] = []):
+    def __init__(self, top_module_name: str, icl_files: list[str], iclude_folders: list[str] = []):
 
         assert(type(icl_files) == list)
         assert(type(iclude_folders) == list)
 
+        self.top_module = "top" 
+        self.top_module_scope = "root"
+        self.icl_instance: IclInstance = None
+        self.icl_retargeter:IclRetargeting = None
+        self.ijtag_reg_model: IclRegisterModel = None
+        
         # Check if ICL files exist
         # If file is relative, check inside include folder
         abb_path_icl_files: list[str] = []
@@ -56,8 +56,11 @@ class Ijtag:
         self.icl_retargeter = self.ijtag_reg_model.retargeter
 
     def iWrite(self, reg_or_port: str, value: str = ""):
+        assert(isinstance(reg_or_port, str))
+        assert(isinstance(value, str))
+        
         icl_item, replacement_list, icl_number = self._prepare_icl_op(reg_or_port, value, "iWrite")
-
+       
         # Set apply state
         if isinstance(icl_item, IclScanRegister):
             icl_item.set_next_iapply()
@@ -70,6 +73,9 @@ class Ijtag:
             icl_item.next_value.set_bit(bit_val, vec_idx)
 
     def iRead(self, reg_or_port: str, value: str = ""):
+        assert(isinstance(reg_or_port, str))
+        assert(isinstance(value, str))
+        
         icl_item, replacement_list, icl_number = self._prepare_icl_op(reg_or_port, value, "iRead")
 
         # Set apply state
@@ -91,12 +97,10 @@ class Ijtag:
         self.ijtag_reg_model.iApply()
 
     def iReset(self, sync: bool = 0):
-        if(sync):
-            raise NotImplementedError(f"sync option in iReset is not currently supported")
-        self.ijtag_reg_model.iReset()
+        self.ijtag_reg_model.iReset(sync)
 
     # Get vectors that iApply calculated
-    def getiApplyVectors(self) -> list[jtagStep]:
+    def getiApplyVectors(self) -> list[stepScanData]:
         return self.ijtag_reg_model.getiApplyVectors()
 
     # Draws IJTAG scan network into a svg image
@@ -269,7 +273,14 @@ class Ijtag:
         """Shared logic to parse input, fetch the ICL item, and prepare indices."""
         match = self._IREAD_IWRITE_PATTERN.search(reg_or_port)
         if not match:
-            raise ValueError(f"Bad name: {reg_or_port} passed to {op_name}")
+            raise ValueError(f"Bad name: '{reg_or_port}' passed to {op_name}")
+        if match.end() != len(reg_or_port):
+            trailing = reg_or_port[match.end():]
+            raise ValueError(
+                f"Bad name: '{reg_or_port}' passed to {op_name} — "
+                f"unexpected trailing '{trailing}' after register reference "
+                f"(did you forget a comma between the name and value?)"
+            )
 
         only_name, left_idx, right_idx = match.groups()
         

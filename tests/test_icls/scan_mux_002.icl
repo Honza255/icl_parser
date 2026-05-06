@@ -2,7 +2,15 @@
 Module scan_mux_002 {
 
     ScanInPort TDI[0];
-
+	ScanOutPort TDO[0] { 
+		Source reg8.SO;
+	}
+	ShiftEnPort SE;
+	CaptureEnPort CE;
+	UpdateEnPort UE;
+	SelectPort SEL;
+	ResetPort RST;
+	TCKPort TCK;
 
 	ScanRegister A[1:0] { 
 		ScanInSource TDI[0];
@@ -153,10 +161,5 @@ Module scan_mux_002 {
         4'b1001 :Sized_1[0];
         4'b1010 :Sized_2[0];
     }  
-
-	ScanOutPort TDO[0] { 
-		Source reg8.SO;
-	}
-
 
 }

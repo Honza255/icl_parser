@@ -1,8 +1,9 @@
 
 import os
 import unittest
+import inspect
 
-from tests.config import COMMON_ICL_BLOCKS, COMMON_VHDL_BLOCKS, IJTAGInternalDriver
+from tests.config import COMMON_ICL_BLOCKS, COMMON_VHDL_BLOCKS, IjtagSimulationDriver
 from src.ijtag import *
 
 import cocotb
@@ -40,81 +41,59 @@ class TestIclSyntax3(unittest.TestCase):
 async def TrapOrFlap_simple_test(dut):
     icl_files = COMMON_ICL_BLOCKS + ["test_icls/benchmarks/ICL/Advanced/TrapOrFlap/TrapOrFlap.icl"]
     module_name = "TrapOrFlap"
+    test_func_name = inspect.getframeinfo(inspect.currentframe()).function
 
-    # Mapping: Interface names -> Real input names of DUT 
-    ijtag_mandatory_map = {
-        "tck": "TCK", 
-        "ce":  "CE", 
-        "se":  "SE", 
-        "ue":  "UE",
-        "sel": "SEL",        
-        "si":  "SI", 
-        "so":  "SO"
-    }
-    ijtag_optional_map = {
-        "rst": "RST"
-    }
+    # IJTAG model network creation from ICL files + IJTAG driver
+    ijtag = IjtagSimulationDriver(dut, 30, module_name, icl_files, [current_dir])
 
-    # Driver of IJTAG interface
-    driver = IJTAGInternalDriver(dut, dut.TCK, ijtag_mandatory_map, ijtag_optional_map)   
+    print(f"-----------------------------------------------------------------------------------")
+    print(f"Starting test simulation: {test_func_name}, ICL: {icl_files}, Module: {module_name}")
+    print(f"-----------------------------------------------------------------------------------")
 
-    # IJTAG model network creation from ICL files
-    ijtag = Ijtag(module_name, icl_files, [current_dir])
-
-
-    print(f"Starting test simulation: TrapOrFlap_simple_test on {module_name}")
 
     clock = Clock(dut.INSTR_CLK, 10, "ns")
     cocotb.start_soon(clock.start())
 
     # Reset DUT
     ###########
-    await driver.reset_instrument()
-    ijtag.iReset()
+    await ijtag.iReset()
 
     # Write and read to scan register
     #################################
     ijtag.iWrite("SREG1.SR", "3")
-    ijtag.iApply()
-    await driver.apply_ijtag_steps(ijtag.getiApplyVectors())
+    await ijtag.iApply()
 
     ijtag.iRead("SREG1.SR", "0") # Capture of SREG1.SR is always zero
     ijtag.iRead("SIB_24.SR", "1") # SIB must be set to reach SREG1.SR
     ijtag.iRead("SIB_11.SR", "1") # SIB must be set to reach SREG1.SR
     ijtag.iWrite("WI_4.reg8.SR", "133")
     ijtag.iWrite("WI_3.reg8.SR", "191")
-    ijtag.iApply()
-    await driver.apply_ijtag_steps(ijtag.getiApplyVectors())
+    await ijtag.iApply()
 
     ijtag.iRead("SREG0.SR", "3") # Capture of SREG0.SR is always 3
     ijtag.iRead("WI_4.reg8.SR", "133")
     ijtag.iRead("WI_3.reg8.SR", "191")    
-    ijtag.iApply()
-    await driver.apply_ijtag_steps(ijtag.getiApplyVectors())
+    await ijtag.iApply()
 
     ijtag.iWrite("CONF1.SR", "16")
     ijtag.iRead("WI_4.reg8.SR", "133")
     ijtag.iRead("WI_3.reg8.SR", "191")    
-    ijtag.iApply()
-    await driver.apply_ijtag_steps(ijtag.getiApplyVectors())
+    await ijtag.iApply()
 
     ijtag.iWrite("CONF2.SR", "7")
     ijtag.iRead("WI_4.reg8.SR", "133")
     ijtag.iRead("WI_3.reg8.SR", "191")
-    ijtag.iApply()
-    await driver.apply_ijtag_steps(ijtag.getiApplyVectors())
+    await ijtag.iApply()
 
     ijtag.iWrite("WI_4.reg8.SR", "5")
     ijtag.iWrite("WI_3.reg8.SR", "63")
     ijtag.iRead("WI_4.reg8.SR", "133")
     ijtag.iRead("WI_3.reg8.SR", "191")
-    ijtag.iApply()
-    await driver.apply_ijtag_steps(ijtag.getiApplyVectors())
+    await ijtag.iApply()
 
     ijtag.iRead("WI_4.reg8.SR", "133")
     ijtag.iRead("WI_3.reg8.SR", "191")
-    ijtag.iApply()
-    await driver.apply_ijtag_steps(ijtag.getiApplyVectors())
+    await ijtag.iApply()
     
     #ijtag.plot_network_graph()
 

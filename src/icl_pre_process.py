@@ -3,13 +3,14 @@ from .icl_parser.iclParser import iclParser
 
 class IclPreProcess(iclListener):
 
-    module_definition_name_space = "root"
+    def __init__(self):  
+        self.module_definition_name_space = "root"
 
-    instance_namespace_out = "root"
-    instance_namespace = "root"
+        self.instance_namespace_out = "root"
+        self.instance_namespace = "root"
 
-    current_module_name  = ""
-    modules = {"root":{}}
+        self.current_module_name  = ""
+        self.modules = {"root":{}}
 
     # icl_source : iclSource_items+ ;
     # iclSource_items : nameSpace_def | useNameSpace_def | module_def;

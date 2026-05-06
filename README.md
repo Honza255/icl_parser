@@ -1,22 +1,24 @@
-# Poor IJTAG ICL Parser to Scan Graph and retargeter
+# Prototype of IJTAG Parser, Retargeter and Scan Graph Generator 
 
-This tool can create scan graph from an ICL file. 
-It can also partially retarget data to scan chains.
+This tool can create simple scan graph from an ICL file. 
+It can also partially retarget register reads and write into data scan chains.
 (Note: Work may still be in progress)
 
-## Supported ICL Statements
-- useNameSpace_def
-- instance_def
-- parameter_def
-- localParameter_def
-- port_def:
-  - scanInPort_def
-  - scanOutPort_def
-  - dataInPort_def
-  - dataOutPort_def
-- scanRegister_def
-- scanMux_def
+## Supported
+- From simple to moderately complex scan networks with muxes and SIBs
+- ICL TAP
+- Parameters
+- Hierarchy
 
+## Not supported
+- Local reset
+- Local update
+- Local capture
+- Parked TMS
+- Data registers
+- Broadcast
+- Retargeting for data in/out ports
+- Retargeting for data registers
 
 ## For expected usage 
 - check main.py or tests
@@ -26,7 +28,7 @@ It can also partially retarget data to scan chains.
 - python -m unittest tests.test_icl_syntax_3.TestIclSyntax3
 
 ## Python dependencies
-- pip install antlr4-python3-runtime==4.7.2 networkx[default] sympy z3-solver matplotlib cocotb cocotb-bus pydot
+- pip install antlr4-python3-runtime==4.7.2 networkx[default] sympy z3-solver matplotlib cocotb pydot
 
 ## Useful Paper Links
 - [IJTAG Standard (IEEE 1687-2014)](https://ieeexplore.ieee.org/document/6974961)

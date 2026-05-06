@@ -1,4 +1,5 @@
 from .icl_common import *
+import warnings
 
 class IclSignal:
 
@@ -22,8 +23,8 @@ class IclSignal:
         else:
             self.indexes = []
 
-    # 1 - right to left ([13:00]) 
-    # 0 - right to left ([00:13])
+    # 1 - right to left ([13:00]), 13 MSB index, 00 LSB index
+    # 0 - right to left ([00:13]), 00 MSB index, 13 LSB index
     def get_direction(self) -> bool:
         return self.dir_right_to_left
 
@@ -169,7 +170,7 @@ class IclNumber:
                         
     def concat(self, icl_number: "IclNumber"):
         if(not isinstance (icl_number, IclNumber)):
-            raise ValueError("Object of class {0} can not be concated with object of class {1}".format(type(self).__name__ , type(obj_2).__name__))
+            raise ValueError("Object of class {0} can not be concated with object of class {1}".format(type(self).__name__ , type(icl_number).__name__))
         if((self.icl_size == -1) or (icl_number.icl_size == -1)):
             raise ValueError("Unsized variables cannot be concated")
         
@@ -195,6 +196,14 @@ class IclNumber:
     def copy(self) -> "IclNumber":
         return IclNumber(self.get_bin_str(), "bin", self.get_bit_size())
     
+    def bit_reversal(self):
+        assert(self.sized_number())
+        x = IclNumber(self.get_bin_str()[::-1], "bin", self.get_icl_size())        
+        self.r_number = x.r_number
+        self.x_number = x.x_number
+        self.icl_size = x.icl_size
+        self.bit_size = x.bit_size
+
     def set_value(self, value: int):
         self.x_number = 0
         self.r_number = value
@@ -276,7 +285,7 @@ class IclNumber:
         if(not isinstance (obj_2, IclNumber)):
             raise ValueError("Object of class {0} can not be substracted with object of class {1}".format(type(self).__name__ , type(obj_2).__name__))
         if((self.x_number > 0) or (obj_2.x_number > 0)):
-            raise("Numbers with x(UNKNOWN) cannot be substracted")
+            raise ValueError("Numbers with x(UNKNOWN) cannot be substracted")
         return IclNumber(str(self.r_number - obj_2.r_number), "dec") 
 
     def __mul__(self, obj_2):
@@ -294,7 +303,7 @@ class IclNumber:
         return IclNumber(str(self.r_number // obj_2.r_number), "dec") 
 
     def __floordiv__(self, obj_2):
-        return self.__truediv__(self, obj_2)
+        return self.__truediv__(obj_2)
     
     def __mod__(self, obj_2):
         if(not isinstance (obj_2, IclNumber)):
@@ -322,10 +331,10 @@ class EnumRef():
         return self.enum_name
 
 class ConcatSig():   
-    def __init__(self, instance: "IclInstance", concat_sigs: list[IclSignal, IclNumber], concat_type) -> None:
+    def __init__(self, instance: "IclInstance", concat_sigs: list[IclSignal | IclNumber], concat_type) -> None:
         self.type: str = concat_type
         self.instance: "IclInstance" = instance
-        self.concat_sigs: list[IclSignal,IclNumber] = concat_sigs
+        self.concat_sigs: list[IclSignal | IclNumber] = concat_sigs
 
         assert(len(concat_sigs) > 0)
         assert(concat_sigs[0] != None)
@@ -602,26 +611,33 @@ class IclItem:
     def get_item_all_named_indexes(self, icl_sig: IclSignal) -> list[str]:
         named_indexes = []
         for index in self.get_item_all_indexes(icl_sig):
-            named_indexes.append("{}_{:04}".format(self.get_name_with_hier(),index))
+            named_indexes.append(add_last_number(self.get_name_with_hier(), index))
         return named_indexes
-    
-    def get_signal_all_named_indexes(self, instance, all_sigs: list[list[IclSignal]]) -> list[str]:
-        named_indexes = []
-        for source_signal in all_sigs:
-            indexes = []
-            source_signal_name = source_signal.get_relative_name()
-            # Get Item(fails if item is not found)
-            source_item = instance.get_icl_item_name(source_signal_name)  
 
-            if(source_signal.get_size()):
-                indexes = source_signal.get_indexes()
-            else:
-                for index in range(source_item.get_vector_size()):
-                    indexes.append(index)
-                    indexes.reverse()
-                    
-            for index in indexes:
-                named_indexes.append("{}_{:04}".format(source_item.get_name_with_hier(),index))
+    def get_signal_indexes(self, instance, signal: IclSignal) -> list[int]:
+        assert(isinstance(signal, IclSignal))
+        
+        signal_name = signal.get_relative_name()
+        icl_item = instance.get_icl_item_name(signal_name)  
+        
+        indexes = []
+        if(signal.get_size()):
+            indexes = signal.get_indexes()
+        else:
+            for index in range(icl_item.get_vector_size()):
+                indexes.append(index)
+                #indexes.reverse()
+        return indexes
+            
+    def get_signal_all_named_indexes(self, instance, all_sigs: list[IclSignal]) -> list[str]:
+        assert(all_sigs)
+        
+        named_indexes = []
+        for signal in all_sigs:
+            signal_full_name = instance.get_icl_item_name(signal.get_relative_name()).get_name_with_hier()  
+
+            for index in self.get_signal_indexes(instance, signal):
+                named_indexes.append(add_last_number(signal_full_name, index))
         
         return named_indexes
 
@@ -637,6 +653,9 @@ class IclInstance(IclItem):
         self.port_seq: dict = {}
         icl_graph = None
         
+    def im_top_instace(self):
+        return self.get_hier() == ""
+
     def add_icl_item(self, icl_item: IclItem):
         for curr_icl_item in self.icl_items:
             if curr_icl_item.get_name() == icl_item.get_name():
@@ -733,12 +752,40 @@ class IclInstance(IclItem):
                 instances.append(item)
 
         # 1. Check all instances under this instance
-        print(instances)
         for item in instances:
-            print("Check", item, item.get_name())
+            print(f"{self.get_name_with_hier()} -> Check on {item} {item.get_name()}")
             item.check()
 
-        # 2. Correct type of input connection into instance this instance
+        # 2. IEEE 1687: A module_def having at least one ScanRegister with a specified ResetValue
+        # shall have at most a single reset_signal so that the source of the reset signal for
+        # the ScanRegister is unambiguous. Additionally, that reset signal must be scalar (1-bit),
+        # because a multi-bit reset port leaves it ambiguous which bit drives the register reset.
+        scan_regs_with_reset = [
+            item for item in self.get_icl_item_type(IclScanRegister)
+            if item.in_reset_value is not None
+        ]
+        reset_ports = self.get_icl_item_type(IclResetPort)
+
+        if scan_regs_with_reset:
+            reg_names = [r.get_name() for r in scan_regs_with_reset]
+
+            if len(reset_ports) > 1:
+                port_names = [p.get_name() for p in reset_ports]
+                raise ValueError(
+                    f"Module '{self.get_name()}': {len(reset_ports)} reset signals declared "
+                    f"({port_names}), but ScanRegisters with ResetValue require at most one "
+                    f"reset signal. Affected registers: {reg_names}. [{self.ctx}]"
+                )
+
+            if len(reset_ports) == 1 and reset_ports[0].get_vector_size() > 1:
+                raise ValueError(
+                    f"Module '{self.get_name()}': reset signal '{reset_ports[0].get_name()}' "
+                    f"is {reset_ports[0].get_vector_size()} bits wide; ScanRegisters with "
+                    f"ResetValue require a scalar (1-bit) reset signal. "
+                    f"Affected registers: {reg_names}. [{self.ctx}]"
+                )
+
+        # 3. Correct type of input connection into instance this instance
         # (icl_process is not able to tell what kind of type is source:ConcatSig )
         for connection in self.connections:
             in_signal: IclSignal = list(connection.keys())[0]
@@ -784,12 +831,84 @@ class IclInstance(IclItem):
             for item in source.get_all_icl_items():
                 if(isinstance(item, IclInstance)):
                     raise ValueError(f"IclInstance must specify port which will be passed as input connection, {self.get_hier()} - {in_port.get_name()}")
-
-        # 3. Check all items (icl items) which are not instances
+                
+        # 4. Check all items (icl items) which are not instances
         print(non_instaces)
         for item in non_instaces:
             print("Check", item, item.get_name())
             item.check()
+
+        # Module checks
+        #######################             
+
+        # Scan interface checks
+        #######################
+        # 6.4.16 - a) A handoff module with more than one port of function ScanInPort or more than one port of function
+        # ScanOutPort shall define as many ScanInterface statements as there are scan interfaces in the
+        # module. ScanInterface statements shall remain optional for internal modules.
+        if(self.instance.im_top_instace()):
+            all_ports: list[str] = []
+            scan_in_ports: list[IclScanInPort] = self.instance.get_icl_item_type(IclScanInPort)
+            scan_out_ports: list[IclScanOutPort] = self.instance.get_icl_item_type(IclScanOutPort)
+            # Bug fix: each port.get_all_named_indexes() returns a list; must flatten
+            for port in scan_in_ports:
+                all_ports.extend(port.get_all_named_indexes())
+            for port in scan_out_ports:
+                all_ports.extend(port.get_all_named_indexes())
+            num_of_scan_in_ports:  int = sum([port.get_vector_size() for port in scan_in_ports])
+            num_of_scan_out_ports: int = sum([port.get_vector_size() for port in scan_out_ports])
+            scan_interfaces: list[IclScanInterface] = self.instance.get_icl_item_type(IclScanInterface)
+
+            if((num_of_scan_in_ports > 1) or (num_of_scan_out_ports > 1)):
+                for interface in scan_interfaces:
+                    for chain in interface.chains:
+                        for port in chain["ports"]:
+                            # chain["ports"] stores IclSignal objects; get_icl_item_name expects a string
+                            icl_port = self.instance.get_icl_item_name(port.get_name())
+                            if(not isinstance(icl_port, (IclScanInPort, IclScanOutPort))):
+                                continue
+                            for port_idx in icl_port.get_all_named_indexes():
+                                assert(port_idx in all_ports)
+                                all_ports.remove(port_idx)
+                assert(len(all_ports) == 0)
+
+            # If handoff module does not have a scan interface, try to create it
+            # Only try to create it if there is only one pair of ScanInPort and ScanOutPort and it is a client interface, not 
+            # a host interface, because if a top module with scan chain does not have a client interface, the module
+            # cannot be driven
+            if((num_of_scan_in_ports == 1) and (num_of_scan_out_ports == 1) and (len(scan_interfaces) == 0)):
+                interface_name = "default_interface"     
+                interface_attributes: list[IclAttribute] = []
+                interface_ports: list[IclSignal] = []
+                chains: list[dict] = [
+                    {
+                    "name": "!default-chain!",
+                    "attr": [],
+                    "ports": [IclSignal(scan_in_ports[0].get_name()), IclSignal(scan_out_ports[0].get_name())],
+                    "default": None,
+                    }
+                ]
+                sel_ports: list[IclSelectPort] = self.instance.get_icl_item_type(IclSelectPort)
+                tms_ports: list[IclTmsPort] = self.instance.get_icl_item_type(IclTmsPort)
+                shiften_ports: list[IclShiftEnable] = self.instance.get_icl_item_type(IclShiftEnable)
+                assert(not self.instance.get_icl_item_type(IclToSelectPort))
+                assert(not self.instance.get_icl_item_type(IclToTmsPort))
+                # 6.4.6.11- a)A selectPort_name shall be associated with a ScanInterface -----,
+                # or when there is a single undeclared scan client interface and a single selectPort_name.
+                if((len(sel_ports) == 1) and (len(tms_ports) == 0)):
+                    assert(sel_ports[0].get_vector_size() == 1)
+                    interface_ports.append(IclSignal(sel_ports[0].get_name()))
+                elif((len(shiften_ports) == 1) and (len(tms_ports) == 0)):
+                    assert(shiften_ports[0].get_vector_size() == 1)
+                    interface_ports.append(IclSignal(shiften_ports[0].get_name()))
+                elif((len(shiften_ports) == 0) and (len(sel_ports) == 0) and (len(tms_ports) == 1)):
+                    assert(tms_ports[0].get_vector_size() == 1)
+                    interface_ports.append(IclSignal(tms_ports[0].get_name()))
+                else:
+                    raise ValueError( f"Top Module '{self.get_module_scope()}': failed to create default scan interface from avaliable ports" )
+                scan_interface = IclScanInterface(self.instance, interface_name, interface_attributes, interface_ports, chains, "generated")
+                self.add_icl_item(scan_interface)
+                scan_interface.check()
 
     # Create list of instances sorted from most nested instances to least nested instances
     def list_instances(self, lvl=0, hier="") -> list:
@@ -912,7 +1031,7 @@ class IclAlias(IclItem):
     def get_all_connections(self) -> list[tuple[str]]:
         side_1 = self.get_all_named_indexes()
         side_2 = self.concat_sig.get_all_named_indexes(self.alias_sig.get_size())
-        print(side_1, side_2)
+        #print(side_1, side_2)
         return list(zip(side_1, side_2))
 
     def get_enum_reference(self) -> str:
@@ -966,20 +1085,20 @@ class IclScanRegister(IclItem):
         # Inital values
         self.icl_name = scan_reg
         self.in_attributes: list[IclAttribute] = in_attributes
-        self.in_scan_in_source: IclSignal = in_scan_in_source
+        self.scan_in: IclSignal = in_scan_in_source
         self.in_default_value: ConcatSig | EnumRef = in_default_value
         self.in_capture_source: ConcatSig | EnumRef = in_capture_source
         self.in_reset_value: ConcatSig | EnumRef = in_reset_value
         self.in_ref_enum: str = in_ref_enum
 
         # Assigned by function check (transforming EnumRef to ConcatSig + size checks)
-        self.scan_in: IclSignal = in_scan_in_source
         self.capture_source: ConcatSig = None
         self.reset_source: ConcatSig = None
         self.default_value_source: ConcatSig = None
 
         # Register values
         self.scan_reg_size = len(self.get_all_named_indexes())
+        self.default_value = IclNumber("x", "bin", self.scan_reg_size)
         self.current_value = IclNumber("x", "bin", self.scan_reg_size)
         self.next_value    = IclNumber("x", "bin", self.scan_reg_size)
         self.expected_data = IclNumber("x", "bin", self.scan_reg_size)
@@ -988,8 +1107,8 @@ class IclScanRegister(IclItem):
         self.activate = 0
         self.select_clause = ""
 
-        # For retargeting
-        self.scan_selection_smt: str = ""
+        # For retargeting, false by default, if register has valid selectin it will be updated
+        self.scan_selection_smt: str = "false"
 
     def set_current_bit(self, value: int, index:int):
         self.current_value.set_bit(value, index)
@@ -1028,10 +1147,20 @@ class IclScanRegister(IclItem):
         return self.activate
     
     def reset(self):
+
+        self.disable_next_iapply()
+        self.bits_to_read.set_value(0)
+
+        # Resets only register which has reset
+        # Values of register with reset will switch to reset values
+        # Values of register without reset will stay the same
         if(self.reset_source):
             self.current_value = self.reset_source.get_icl_number().copy()
             self.next_value = self.reset_source.get_icl_number().copy()
-
+        else:
+            self.current_value = self.current_value.copy()
+            self.next_value = self.current_value.copy()
+            
     def get_vector_size(self) -> int:
         # vector_size = 0
         # if(self.scan_reg.get_size()):
@@ -1068,7 +1197,7 @@ class IclScanRegister(IclItem):
         return scan_in[0]
 
     def get_scancapture_named_index(self) -> str:
-        scan_in = self.get_signal_all_named_indexes(self.instance, [self.scan_capture])
+        scan_in = self.get_signal_all_named_indexes(self.instance, [self.capture_source])
         assert(len(scan_in) == 1)
         return scan_in[0]
     
@@ -1084,7 +1213,7 @@ class IclScanRegister(IclItem):
             
         def enum_symbol_check(self, in_data, concat_type) -> ConcatSig:
             if isinstance(in_data, EnumRef):
-                assert self.self.in_ref_enum, f"IclScanRegister uses enum symbol references without referencing concrete IclEnum: {self.ctx}"
+                assert self.in_ref_enum, f"IclScanRegister uses enum symbol references without referencing concrete IclEnum: {self.ctx}"
                 enumeration: IclEnum = self.instance.get_icl_item_name(self.in_ref_enum)
                 enum_symbol_value = enumeration.get_enum_number(in_data)
                 return ConcatSig(self.instance, [enum_symbol_value], concat_type)
@@ -1094,12 +1223,6 @@ class IclScanRegister(IclItem):
         self.default_value_source = enum_symbol_check(self, self.in_default_value, CONCAT_NUMBER_T)
         self.capture_source = enum_symbol_check(self, self.in_capture_source, CONCAT_DATA_T)
         self.reset_source = enum_symbol_check(self, self.in_reset_value, CONCAT_NUMBER_T)
-
-        if self.default_value_source:
-            self.default_value_source.check()
-            self.default_value_source.check_fit(self.get_vector_size())
-            if not self.default_value_source.sized_number():
-                self.default_value_source.resize(self.get_vector_size())
 
         if self.capture_source:
             self.capture_source.check()
@@ -1113,7 +1236,58 @@ class IclScanRegister(IclItem):
             if not self.reset_source.sized_number():
                 self.reset_source.resize(self.get_vector_size())
 
+        if self.default_value_source:
+            self.default_value_source.check()
+            self.default_value_source.check_fit(self.get_vector_size())
+            if not self.default_value_source.sized_number():
+                self.default_value_source.resize(self.get_vector_size())
 
+        
+        # Calculate default value
+        #   Default is zero
+        #   Reset value can overwrite Default
+        #   Default value can overwrite Reset value
+        
+        if self.reset_source and self.default_value_source:
+            self.default_value = IclNumber("x", "bin", self.scan_reg_size)
+
+            a = self.reset_source.get_icl_number().copy()
+            b = self.default_value_source.get_icl_number().copy()
+            assert(a.get_icl_size() == b.get_icl_size())
+
+            for idx in range(a.get_icl_size()):
+                # When both scanRegister_defaultLoadValue and scanRegister_resetValue exist, the values in the
+                # bits of scanRegister_defaultLoadValue shall match the non-X values in the corresponding bits of
+                # scanRegister_resetValue.        
+                a_char =  a.get_bit(idx).get_bin_str()
+                b_char =  b.get_bit(idx).get_bin_str()
+
+                if((b_char in ["0","1"]) and (a_char not in ["x"])):
+                    if(b_char != a_char):
+                        raise ValueError(f"{a} - {b} Both values must match in the non-X values {self.ctx}")
+
+                if(b_char == "x"):
+                    self.default_value.set_bit(a_char, idx)
+                else:
+                    self.default_value.set_bit(b_char, idx)
+
+        elif self.reset_source:
+            self.default_value = self.reset_source.get_icl_number().copy()
+            
+        elif self.default_value_source:
+            self.default_value = self.default_value_source.get_icl_number().copy()
+            
+        else:
+            self.default_value = IclNumber("0", "bin", self.scan_reg_size)
+
+        # If there is a x in a ICL number, convert it to 0            
+        for idx in range(self.default_value.get_icl_size()):
+            if(self.default_value.get_bit(idx).get_bin_str() == "x"):
+                self.default_value.set_bit("0", idx)
+
+        assert(self.default_value.get_number() > -1)
+
+                    
 class IclLogicSignal(IclItem):
 
     def __init__(
@@ -1126,7 +1300,8 @@ class IclLogicSignal(IclItem):
         super().__init__(instance, icl_name.get_name(), instance.get_hier(), instance.get_hier(), ctx)
         self.icl_name: IclSignal = icl_name
         self.expression: list = expression
-        self.processed_expression = None
+        self.sympy_expression = None
+        self.smt2_expression = None
 
         # If ICL signal name is unsized
         if self.icl_name.get_size() == 0:
@@ -1143,6 +1318,12 @@ class IclLogicSignal(IclItem):
     
     def get_vector_size(self) -> int:
         return 1
+
+    def get_sympy_expression(self) -> str:
+        return self.sympy_expression
+
+    def get_smt2_expression(self) -> str:
+        return self.smt2_expression
     
     def check_ang_get_sizes(self, expr: list) -> tuple:
         size_all = 0
@@ -1187,17 +1368,17 @@ class IclLogicSignal(IclItem):
         assert(len(new_list) > 0)
         return new_list
 
-    def do_expr_2(self, exr, lvl = 0):
-        print("do_expr", exr)
+    def create_simpy_expression(self, exr, lvl = 0):
+        #print("do_expr", exr)
         expt_type = exr[0]
         exp_instances = []
         for item in exr[1:]:
-            print("ITEM", item)
+            #print("ITEM", item)
             if type(item) == list:
-                exp_instances.append(self.do_expr_2(item, lvl+1))
+                exp_instances.append(self.create_simpy_expression(item, lvl+1))
             else:
                 exp_instances.append(item)
-            print("exp_instances", exp_instances)
+            #print("exp_instances", exp_instances)
 
         # In situations where we compare (IclDataInPort, IclDataOutPort, IclScanRegister, IclAlias) with an enum symbol (EnumRef)
         # Transform EnumRef to Concat(IclNumber) of that enum symbol
@@ -1233,12 +1414,12 @@ class IclLogicSignal(IclItem):
             exp_instances[1] = ConcatSig(self.instance, [enum_symbol_value], CONCAT_NUMBER_T).get_list_for_expr()
 
         for idx, x in enumerate(exp_instances):
-            print(x, type(x))
+            #print(x, type(x))
             assert(type(x) in [ConcatSig, list, EnumRef])
             if isinstance(x, ConcatSig):
                 exp_instances[idx] = x.get_list_for_expr()
 
-        print("do_expr in progress", exr, exp_instances, lvl), 
+        #print("do_expr in progress", exr, exp_instances, lvl), 
         return_item = ["x"]
 
         if expt_type in ["!", "~"]:
@@ -1253,7 +1434,7 @@ class IclLogicSignal(IclItem):
             return_item = []
             for item in var_1:
                 if isinstance(item, str):    
-                    return_item += [f"(not {item})"]
+                    return_item += [f"Not({item})"]
                 elif isinstance(item, IclNumber):
                     item.negate()
                     return_item += [item]
@@ -1273,14 +1454,14 @@ class IclLogicSignal(IclItem):
             # If there is only one bit for the expression
             # It does not make sense to do any operation and just pass bit/expr along
             if len(new_list) > 1:
-                expr_op = "fail"
+                expr_op = "Fail"
                 if expt_type in ["&"]:
-                    expr_op = "and"
+                    expr_op = "And"
                 elif expt_type in ["|"]:
-                    expr_op = "or"
+                    expr_op = "Or"
                 elif expt_type in ["^"]:
-                    expr_op = "xor"
-                return_item = ["({} {})".format(expr_op, " ".join(new_list))]
+                    expr_op = "Xor"
+                return_item = ["{}({})".format(expr_op, ",".join(new_list))]
             else:
                 return_item = new_list
                 
@@ -1318,24 +1499,24 @@ class IclLogicSignal(IclItem):
             assert(len(var_1_exprs) == len(var_2_exprs))
             assert(size_all_1 == size_all_2)
             
-            print(var_1_exprs)
-            print(var_2_exprs)
+            #print(var_1_exprs)
+            #print(var_2_exprs)
 
             expr_op = ""
             if expt_type in ["&", "&&"]:
-                expr_op = "and"
+                expr_op = "And"
                 # Check that boolean operation has only expr. on each side
                 if expt_type in ["&&"]:
                     assert((size_all_1 == 1) and (size_all_2 == 1))
             elif expt_type in ["|", "||"]:
-                expr_op = "or"
+                expr_op = "Or"
                 # Check that boolean operation has only expr. on each side
                 if expt_type in ["||"]:
                     assert((size_all_1 == 1) and (size_all_2 == 1))
             elif expt_type in ["^"]:
-                expr_op = "xor"
+                expr_op = "Xor"
             elif expt_type in ["=="]:
-                expr_op = "and"
+                expr_op = "And"
             else:
                raise ValueError(f"Error {expt_type}")
             
@@ -1344,36 +1525,40 @@ class IclLogicSignal(IclItem):
                 for expr_idx, _ in enumerate(var_1_exprs):
                     val = var_2_exprs[expr_idx]
                     assert(val in ["0", "1"])
-                    new_exp = f"{var_1_exprs[expr_idx]}" if val == "1" else f"(not {var_1_exprs[expr_idx]})"
+                    new_exp = f"{var_1_exprs[expr_idx]}" if val == "1" else f"Not({var_1_exprs[expr_idx]})"
                     return_item.append(new_exp)
-                return_item = " ".join(return_item)
-                return_item = [f"(and {return_item})"]
+                return_item = ",".join(return_item)
+                return_item = [f"And({return_item})"]
             else:
                 for expr_idx, _ in enumerate(var_1_exprs):
-                    return_item.append(f"({expr_op} {var_1_exprs[expr_idx]} {var_2_exprs[expr_idx]})")
+                    return_item.append(f"{expr_op}({var_1_exprs[expr_idx]}, {var_2_exprs[expr_idx]})")
         else:
             raise ValueError(f"Error {expt_type}")
-                          
+
         # Entire expression, must be reduced to one bit
         if lvl == 0:    
             assert(isinstance(return_item, list))
             if not (len(return_item) == 1):
                 raise RuntimeError(f"Expression {self.ctx} does return {len(return_item)} bit output, insted of one bit output, conv. expr.: {return_item}")
-                                                        
+            if isinstance(return_item[0], IclNumber):
+                item: IclNumber = return_item[0]
+                assert(item.get_bit_size() == 1)
+                if item.get_bin_bit_str(0) == "1":
+                    return_item = ["True"]
+                elif item.get_bin_bit_str(0) == "0":
+                    return_item = ["False"]
+                else:
+                    raise RuntimeError(f"Expression {self.ctx} returns a X")
+                               
         return return_item
-
+    
     def check(self):
-        print('\n\nEXP EXP EXP EXP EXP EXP EXP ')
-        print(self.ctx)
-        print(self.instance)
-        print(self.icl_name)
-        print(self.expression)
-        print('do expression')
+        self.sympy_expression = self.create_simpy_expression(self.expression)[0]
+        self.smt2_expression = sympy_to_smt2(self.sympy_expression) 
 
-        self.processed_expression = self.do_expr_2(self.expression)[0]
-        a = self.processed_expression 
-        print(self.ctx)
-        print(self.processed_expression)
+        #print(self.ctx)
+        #print(self.sympy_expression)
+        #print(self.smt2_expression)
 
 class IclDataRegister(IclItem):
 
@@ -1398,8 +1583,8 @@ class IclDataRegister(IclItem):
         self.write_en: IclSignal = write_en
 
         # Is is able to read/write
-        self.is_readable: bool = None
-        self.is_writable: bool = None
+        self._is_readable: bool = None
+        self._is_writable: bool = None
 
 
         # Register values
@@ -1451,12 +1636,17 @@ class IclDataRegister(IclItem):
         self.read_activate = 1
 
     def disable_next_read_iapply(self):
-        self.raed_activate = 0
+        self.read_activate = 0
             
     def is_in_next_read_iapply(self):
         return self.read_activate
 
     def reset(self):
+
+        self.disable_next_write_iapply()
+        self.disable_next_read_iapply()
+        self.set_read_bits(0)
+
         # Temp solution
         self.current_value.set_value(0)
         self.next_value.set_value(0)
@@ -1475,10 +1665,10 @@ class IclDataRegister(IclItem):
         return len(self.get_all_indexes())
 
     def is_readable(self) -> bool:
-        return self.is_readable
+        return self._is_readable
 
     def is_writable(self) -> bool:
-        return self.is_writable
+        return self._is_writable
 
     def get_reg_address(self) -> int:
         return self.reg_address
@@ -1550,12 +1740,12 @@ class IclDataRegister(IclItem):
                 data_in_port_size = data_in_port.get_sized_bits_size()
 
                 if(write_en_port_size != 1):
-                    raise ValueError(f"Write EN has more than one bit", {self.ctx} )
+                    raise ValueError(f"Write EN has more than one bit, {self.ctx}" )
 
                 if(not (reg_size <= data_in_port_size)):
                     raise ValueError(f"Data in port size({data_in_port_size}) is smaller thatn register that is supposed to write to ({reg_size}), {self.ctx}")
 
-                self.is_writable = 1
+                self._is_writable = True
 
             if((read_en_port != None) and (data_out_port != None)):
                 assert(read_en_port.sized_number())
@@ -1569,16 +1759,16 @@ class IclDataRegister(IclItem):
                     raise ValueError(f"Read EN has more than one bit")
 
                 if(not (reg_size <= data_out_port_size)):
-                    raise ValueError(f"Data out port size({data_out_port_size}) is smaller thatn register that is supposed to write to ({reg_size}), {self.ctx}")
+                    raise ValueError(f"Data out port size({data_out_port_size}) is smaller thatn register that is supposed to read from ({reg_size}), {self.ctx}")
 
                 if(not (reg_size <= self.one_hot.get_vector_size())):
                     raise ValueError(f"One hot data group with size ({self.one_hot.get_vector_size()}) is smaller that register that is supposed to get data ({reg_size}), {self.ctx}")
 
-                self.is_readable = 1
+                self._is_readable = True
 
         print(f"{self.ctx}")
-        print(f"Write able-{self.is_writable}")
-        print(f"Read able-{self.is_readable}")
+        print(f"Write able-{self._is_writable}")
+        print(f"Read able-{self._is_readable}")
         
 
 class IclOneHotScanGroup(IclItem):
@@ -1658,6 +1848,7 @@ class IclScanMux(IclItem):
         self.mux_control.check()
         mux_control_size = self.mux_control.get_vector_min_size()
         mux_control_names = self.mux_control.get_all_named_indexes(mux_control_size)
+        mux_control_names.reverse()
 
         mux_names = self.get_all_named_indexes()
         mux_size = 1 if self.mux.get_size() == 0 else self.mux.get_size()
@@ -1686,15 +1877,15 @@ class IclScanMux(IclItem):
                 selectee_expr_smt = []
                 selectee_expr_py = []
                 for idx, scan_sel_bit in enumerate(mux_control_names):
-                    pass
-                    #scan_sel_bit = scan_sel_bit.replace('.', '_')
-                    print(selectee.get_bit(idx).get_number())
+                    #print(selectee.get_bit(idx).get_number())
+                    
                     if(selectee.get_bit(idx).get_number()):
                         selectee_expr_smt.append(scan_sel_bit)
                         selectee_expr_py.append(scan_sel_bit)
                     else:
                         selectee_expr_smt.append("(not {})".format(scan_sel_bit))
                         selectee_expr_py.append("Not({})".format(scan_sel_bit))
+
                 selectee_expr_smt = "(and {})".format(" ".join(selectee_expr_smt))
                 selectee_expr_py = "And({})".format(",".join(selectee_expr_py))
 
@@ -1704,7 +1895,6 @@ class IclScanMux(IclItem):
             selectee_list_expr_py = "Or({})".format(",".join(selectee_list_expr_py))
 
             self.connections += (list(zip(tos_names, mux_names, [selectee_list_expr_smt], [selectee_list_expr_py])))
-
 
 class IclDataMux(IclItem):
     
@@ -1731,6 +1921,7 @@ class IclDataMux(IclItem):
         self.mux_control.check()
         mux_control_size = self.mux_control.get_vector_min_size()
         mux_control_names = self.mux_control.get_all_named_indexes(mux_control_size)
+        mux_control_names.reverse()
 
         mux_names = self.get_all_named_indexes()
         mux_size = 1 if self.mux.get_size() == 0 else self.mux.get_size()
@@ -1740,7 +1931,7 @@ class IclDataMux(IclItem):
         # Also check that all sized values match with mux control size
         for selectee_list, tos in self.mux_selects:
             for mux_selection_value in selectee_list:
-                print(mux_selection_value)               
+                #print(mux_selection_value)               
                 if(not mux_selection_value.sized_number()):
                     mux_selection_value.resize(mux_control_size)
                 if(mux_selection_value.get_icl_size() != mux_control_size):
@@ -1760,9 +1951,7 @@ class IclDataMux(IclItem):
                 selectee_expr_smt = []
                 selectee_expr_py = []
                 for idx, scan_sel_bit in enumerate(mux_control_names):
-                    pass
-                    scan_sel_bit = scan_sel_bit.replace('.', '_')
-                    print(selectee.get_bit(idx).get_number())
+                    #print(selectee.get_bit(idx).get_number())
                     if(selectee.get_bit(idx).get_number()):
                         selectee_expr_smt.append(scan_sel_bit)
                         selectee_expr_py.append(scan_sel_bit)
@@ -1795,37 +1984,341 @@ class IclScanInterface(IclItem):
         self.icl_name: str = icl_name
     
         self.attributes: list[IclAttribute] = icl_attributes
-        self.interface_ports: list[IclSignal] = interface_ports
+        self.interface_ports_ref: list[IclSignal] = interface_ports
         self.chains: list[dict] = scan_chains
 
         # Types: host_tap, client_tap, host_scan_interface, client_scan_interface
         self.interface_type = None 
 
+    def get_interface_type(self) -> str:
+        return self.interface_type
+
     def check(self):
-        for port in self.interface_ports:
-            icl_port = self.instance.get_icl_item_name(port.get_name())
-            icl_port_type = type(icl_port)
-            if(icl_port_type == IclTmsPort):
-                self.interface_type = "client_tap"
-                break
-            elif(icl_port_type == IclToTmsPort):
-                self.interface_type = "host_tap"
-                break
-            elif(icl_port_type == IclShiftEnable):
-                self.interface_type = "client_scan_interface"
-                break
-            elif(icl_port_type == IclToShiftEnable):
-                self.interface_type = "host_scan_interface"
-                break
-        assert(icl_port_type != None)
+        # Filter out ports that are not Scan In or Scan out from !default-chain!
+        # (Default chain inherits all interface_ports including control ports; keep only SI/SO)
+        tmp = []
+        for idx, chain in enumerate(self.chains):
+            if ("!default-chain!" == chain["name"]):
+                for port_ref in chain["ports"]:
+                    if isinstance(self.instance.get_icl_item_name(port_ref.get_name()), (IclScanInPort,IclScanOutPort)):
+                        tmp.append(port_ref)
+                self.chains[idx]["ports"] = tmp
 
-        if(self.interface_type == "client_scan_interface"):
-            icl_port = self.instance.get_icl_item_name(port.get_name())
-            icl_port_type = type(icl_port)
-            assert(icl_port_type in [IclScanInPort, IclScanOutPort, IclShiftEnable, IclSelectPort, IclCaptureEnable, IclUpdateEnable, IclResetPort, IclTckPort])
+        # If there is a default chain, remove ports from normal interface ports
+        # Otherwise they would be duplicated in chain and interface_ports
+        for chain in self.chains:
+            if ("!default-chain!" == chain["name"]):
+                new_interface_ports_ref = []
+                for port in self.interface_ports_ref:
+                    if port not in chain["ports"]:
+                        new_interface_ports_ref.append(port)
+                self.interface_ports_ref = new_interface_ports_ref
+                break
+
+        # Determine which type this scan interface is
+        # 6.4.16 - d)
+        for port_ref in self.interface_ports_ref:
+            icl_port = self.instance.get_icl_item_name(port_ref.get_name())
+            if(isinstance(icl_port, (IclTmsPort))):
+                self.interface_type = CLIENT_TAP
+                break
+            elif(isinstance(icl_port, (IclToTmsPort))):
+                self.interface_type = HOST_TAP
+                break
+            elif(isinstance(icl_port, (IclShiftEnable, IclSelectPort))):
+                self.interface_type = CLIENT_SCAN_INTERFACE
+                break
+            elif(isinstance(icl_port, (IclToShiftEnable, IclToSelectPort))):
+                self.interface_type = HOST_SCAN_INTERFACE
+                break
+
+        # Check if we found a type
+        if self.interface_type is None:
+            raise ValueError(f"ScanInterface '{self.icl_name}': cannot determine type — interface must contain a TMSPort/ToTMSPort, ShiftEnPort/SelectPort, or ToShiftEnPort/ToSelectPort (rule d)")
+        
+        # Check if scan interface does not have duplicate ports.
+        port_keys: list[str] = self.get_signal_all_named_indexes(self.instance, self.interface_ports_ref)
+        for chain in self.chains:
+            port_keys.extend(self.get_signal_all_named_indexes(self.instance, chain["ports"]))
+        if len(port_keys) != len(set(port_keys)):
+            raise ValueError(f"ScanInterface '{self.icl_name}': duplicate port in ScanInterface: {port_keys}")
+
+        # Make sure ports in interface are the right type, and righ count
+        # Count each port occurence
+        # 6.4.16 - e) f) g) h)
+        type_counter: dict = {
+            IclTckPort: 0,
+            IclToTckPort: 0,
+            IclScanInPort: 0,
+            IclScanOutPort: 0,
+            IclShiftEnable: 0,
+            IclUpdateEnable: 0,
+            IclCaptureEnable: 0,
+            IclResetPort: 0,
+            IclSelectPort: 0,
+            IclToShiftEnable: 0,
+            IclToUpdateEnable: 0,
+            IclToCaptureEnable: 0,
+            IclToResetPort: 0,
+            IclToSelectPort: 0,            
+            IclTmsPort: 0,
+            IclTrstPort: 0,
+            IclToTmsPort: 0,
+            IclToTrstPort: 0
+        }
+        for port_ref in self.interface_ports_ref:
+            icl_port = self.instance.get_icl_item_name(port_ref.get_name())
+            icl_port_ref_size = len(self.get_signal_all_named_indexes(self.instance, [port_ref]))
+            icl_type = type(self.instance.get_icl_item_name(port_ref.get_name()))
+            if(icl_type in type_counter.keys()):
+                type_counter[icl_type] += icl_port_ref_size
+            else:
+                type_counter[icl_type] = icl_port_ref_size
+
+            if(self.interface_type == CLIENT_SCAN_INTERFACE):
+                if not isinstance(icl_port, (IclScanInPort, IclScanOutPort, IclShiftEnable, IclSelectPort, IclCaptureEnable, IclUpdateEnable, IclResetPort, IclTckPort)):
+                    raise ValueError(f"ScanInterface '{self.icl_name}': port '{port_ref.get_name()}' ({type(icl_port).__name__}) not allowed in client scan interface")
+            elif(self.interface_type == HOST_SCAN_INTERFACE):
+                if not isinstance(icl_port, (IclScanInPort, IclScanOutPort, IclToShiftEnable, IclToSelectPort, IclToCaptureEnable, IclToUpdateEnable, IclToResetPort, IclToTckPort)):
+                    raise ValueError(f"ScanInterface '{self.icl_name}': port '{port_ref.get_name()}' ({type(icl_port).__name__}) not allowed in host scan interface")
+            elif(self.interface_type == CLIENT_TAP):
+                if not isinstance(icl_port, (IclScanInPort, IclScanOutPort, IclTmsPort, IclTrstPort, IclTckPort)):
+                    raise ValueError(f"ScanInterface '{self.icl_name}': port '{port_ref.get_name()}' ({type(icl_port).__name__}) not allowed in client TAP interface")
+            elif(self.interface_type == HOST_TAP):
+                if not isinstance(icl_port, (IclScanInPort, IclScanOutPort, IclToTmsPort, IclToTrstPort, IclToTckPort)):
+                    raise ValueError(f"ScanInterface '{self.icl_name}': port '{port_ref.get_name()}' ({type(icl_port).__name__}) not allowed in host TAP interface")
+        for chain in self.chains:
+            for port_ref in chain["ports"]:
+                icl_port = self.instance.get_icl_item_name(port_ref.get_name())
+                if not isinstance(icl_port, (IclScanInPort, IclScanOutPort)):
+                    raise ValueError(f"ScanInterface '{self.icl_name}': chain '{chain['name']}' port '{port_ref.get_name()}' must be ScanInPort or ScanOutPort, got {type(icl_port).__name__}")
+                icl_type = type(icl_port)
+                if(icl_type in type_counter.keys()):
+                    type_counter[icl_type] += icl_port_ref_size
+                else:
+                    type_counter[icl_type] = icl_port_ref_size
+
+        # 6.4.16 - i)
+        # When there is a single port of function ShiftEnPort, CaptureEnPort, or UpdateEnPort, it shall be
+        # implicitly associated with every client scan interface that does not already have a port of that
+        # particular port function among its members.
+        if(self.interface_type == CLIENT_SCAN_INTERFACE):
+            if(type_counter[IclCaptureEnable] == 0):
+                tmp: list[IclCaptureEnable] = self.instance.get_icl_item_type(IclCaptureEnable)
+                num_of_ports: int = sum([port.get_vector_size() for port in tmp])
+                if(num_of_ports == 1):
+                    self.interface_ports_ref.append(IclSignal(tmp[0].get_name()))
+                    type_counter[IclCaptureEnable] += 1
+            if(type_counter[IclUpdateEnable] == 0):
+                tmp: list[IclUpdateEnable] = self.instance.get_icl_item_type(IclUpdateEnable)
+                num_of_ports: int = sum([port.get_vector_size() for port in tmp])
+                if(num_of_ports == 1):
+                    self.interface_ports_ref.append(IclSignal(tmp[0].get_name()))
+                    type_counter[IclUpdateEnable] += 1
+            if(type_counter[IclShiftEnable] == 0):
+                tmp: list[IclShiftEnable] = self.instance.get_icl_item_type(IclShiftEnable)
+                num_of_ports: int = sum([port.get_vector_size() for port in tmp])
+                if(num_of_ports == 1):
+                    self.interface_ports_ref.append(IclSignal(tmp[0].get_name()))
+                    type_counter[IclShiftEnable] += 1
+            # Not in standard
+            if(self.instance.im_top_instace()):
+                if(type_counter[IclTckPort] == 0):
+                    tmp: list[IclTckPort] = self.instance.get_icl_item_type(IclTckPort)
+                    num_of_ports: int = sum([port.get_vector_size() for port in tmp])
+                    if(num_of_ports == 1):
+                        self.interface_ports_ref.append(IclSignal(tmp[0].get_name()))
+                        type_counter[IclTckPort] += 1
+
+        # Not in standard
+        elif(self.interface_type == HOST_TAP):
+            if(self.instance.im_top_instace()):
+                if(type_counter[IclTckPort] == 0):
+                    tmp: list[IclTckPort] = self.instance.get_icl_item_type(IclTckPort)
+                    num_of_ports: int = sum([port.get_vector_size() for port in tmp])
+                    if(num_of_ports == 1):
+                        self.interface_ports_ref.append(IclSignal(tmp[0].get_name()))
+                        type_counter[IclTckPort] += 1
+
+        # 6.4.16 - j)
+        elif(self.interface_type == HOST_SCAN_INTERFACE):
+            if(type_counter[IclToCaptureEnable] == 0):
+                tmp: list[IclToCaptureEnable] = self.instance.get_icl_item_type(IclToCaptureEnable)
+                num_of_ports: int = sum([port.get_vector_size() for port in tmp])
+                if(num_of_ports == 1):
+                    self.interface_ports_ref.append(IclSignal(tmp[0].get_name()))
+                    type_counter[IclToCaptureEnable] += 1
+            if(type_counter[IclToUpdateEnable] == 0):
+                tmp: list[IclToUpdateEnable] = self.instance.get_icl_item_type(IclToUpdateEnable)
+                num_of_ports: int = sum([port.get_vector_size() for port in tmp])
+                if(num_of_ports == 1):
+                    self.interface_ports_ref.append(IclSignal(tmp[0].get_name()))
+                    type_counter[IclToUpdateEnable] += 1
+            if(type_counter[IclToShiftEnable] == 0):
+                tmp: list[IclToShiftEnable] = self.instance.get_icl_item_type(IclToShiftEnable)
+                num_of_ports: int = sum([port.get_vector_size() for port in tmp])
+                if(num_of_ports == 1):
+                    self.interface_ports_ref.append(IclSignal(tmp[0].get_name()))
+                    type_counter[IclToShiftEnable] += 1
+
+        def _check(cond, msg):
+            if not cond:
+                raise ValueError(f"ScanInterface '{self.icl_name}' ({self.interface_type}): {msg}")
+
+        if(self.interface_type == CLIENT_SCAN_INTERFACE):
+            # 6.4.16 e3) zero or one CaptureEnPort
+            _check(type_counter[IclCaptureEnable] in [0,1], "zero or one CaptureEnPort allowed (rule e3)")
+            # 6.4.16 e4) zero or one UpdateEnPort
+            _check(type_counter[IclUpdateEnable] in [0,1], "zero or one UpdateEnPort allowed (rule e4)")
+            # 6.4.16 e5) zero or one ResetPort
+            _check(type_counter[IclResetPort] in [0,1], "zero or one ResetPort allowed (rule e5)")
+            # 6.4.16 e6) zero or one TCKPort
+            _check(type_counter[IclTckPort] in [0,1], "zero or one TCKPort allowed (rule e6)")
+            # 6.4.16 e2) one ShiftEnPort and/or one-or-many SelectPort — at least one required
+            _check(type_counter[IclShiftEnable] in [0,1], "at most one ShiftEnPort allowed (rule e2)")
+            _check(type_counter[IclShiftEnable] > 0 or type_counter[IclSelectPort] > 0,
+                   "one ShiftEnPort and/or one-or-many SelectPort required (rule e2)")
+            # 6.4.16 e1) one or many SI/SO pairs
+            _check(type_counter[IclScanInPort] > 0, "one or many ScanInPort required (rule e1)")
+            _check(type_counter[IclScanOutPort] > 0, "one or many ScanOutPort required (rule e1)")
+            _check(type_counter[IclScanInPort] == type_counter[IclScanOutPort],
+                   "ScanInPort and ScanOutPort counts must match (rule e1)")
+
+        elif(self.interface_type == HOST_SCAN_INTERFACE):
+            # 6.4.16 f3) zero or one ToCaptureEnPort
+            _check(type_counter[IclToCaptureEnable] in [0,1], "zero or one ToCaptureEnPort allowed (rule f3)")
+            # 6.4.16 f4) zero or one ToUpdateEnPort
+            _check(type_counter[IclToUpdateEnable] in [0,1], "zero or one ToUpdateEnPort allowed (rule f4)")
+            # 6.4.16 f5) zero or one ToResetPort
+            _check(type_counter[IclToResetPort] in [0,1], "zero or one ToResetPort allowed (rule f5)")
+            # 6.4.16 f6) zero or one ToTCKPort
+            _check(type_counter[IclToTckPort] in [0,1], "zero or one ToTCKPort allowed (rule f6)")
+            # 6.4.16 f2) one ToShiftEnPort and/or one-or-many ToSelectPort — at least one required
+            _check(type_counter[IclToShiftEnable] in [0,1], "at most one ToShiftEnPort allowed (rule f2)")
+            _check(type_counter[IclToShiftEnable] > 0 or type_counter[IclToSelectPort] > 0,
+                   "one ToShiftEnPort and/or one-or-many ToSelectPort required (rule f2)")
+            # 6.4.16 f1) one ScanInPort and/or one ScanOutPort; ScanOutPort mandatory
+            _check(type_counter[IclScanInPort] in [0,1], "at most one ScanInPort allowed (rule f1)")
+            _check(type_counter[IclScanOutPort] == 1, "exactly one ScanOutPort required (rule f1)")
+            _check(type_counter[IclScanInPort] <= type_counter[IclScanOutPort],
+                   "ScanInPort count must not exceed ScanOutPort count (rule f1)")
+
+        elif(self.interface_type == CLIENT_TAP):
+            # 6.4.16 g2) one TMSPort
+            _check(type_counter[IclTmsPort] == 1, "exactly one TMSPort required (rule g2)")
+            # 6.4.16 g3) zero or one TRSTPort
+            _check(type_counter[IclTrstPort] in [0,1], "zero or one TRSTPort allowed (rule g3)")
+            # 6.4.16 g4) zero or one TCKPort
+            _check(type_counter[IclTckPort] in [0,1], "zero or one TCKPort allowed (rule g4)")
+            # 6.4.16 g1) one or many SI/SO pairs
+            _check(type_counter[IclScanInPort] > 0, "one or many ScanInPort required (rule g1)")
+            _check(type_counter[IclScanOutPort] > 0, "one or many ScanOutPort required (rule g1)")
+            _check(type_counter[IclScanInPort] == type_counter[IclScanOutPort],
+                   "ScanInPort and ScanOutPort counts must match (rule g1)")
+
+        elif(self.interface_type == HOST_TAP):
+            # 6.4.16 h2) one ToTMSPort
+            _check(type_counter[IclToTmsPort] == 1, "exactly one ToTMSPort required (rule h2)")
+            # 6.4.16 h3) zero or one ToTRSTPort
+            _check(type_counter[IclToTrstPort] in [0,1], "zero or one ToTRSTPort allowed (rule h3)")
+            # 6.4.16 h4) zero or one ToTCKPort
+            _check(type_counter[IclToTckPort] in [0,1], "zero or one ToTCKPort allowed (rule h4)")
+            # 6.4.16 h1) one ScanInPort and/or one ScanOutPort; ScanOutPort mandatory
+            _check(type_counter[IclScanInPort] in [0,1], "at most one ScanInPort allowed (rule h1)")
+            _check(type_counter[IclScanOutPort] == 1, "exactly one ScanOutPort required (rule h1)")
+            _check(type_counter[IclScanInPort] <= type_counter[IclScanOutPort],
+                   "ScanInPort count must not exceed ScanOutPort count (rule h1)")
+
+        # 6.4.16 - k) If a scan client interface has more than one ScanInPort/ScanOutPort pair, then each pair shall be
+        # declared in a scanInterfaceChain_def element.
+        if(self.interface_type == CLIENT_SCAN_INTERFACE):
+            if((type_counter[IclScanInPort] + type_counter[IclScanOutPort]) > 2):
+                for chain in self.chains:
+                    num_of_scan_ins = 0
+                    num_of_scan_outs = 0
+                    for port_ref in chain["ports"]:
+                        port_item = self.instance.get_icl_item_name(port_ref.get_name())
+                        port_ref_size = len(self.get_signal_all_named_indexes(self.instance, [port_ref]))
+                        if (isinstance(port_item, (IclScanInPort))):
+                            num_of_scan_ins += port_ref_size
+                        if (isinstance(port_item, (IclScanOutPort))):
+                            num_of_scan_outs += port_ref_size
+                    if not ((num_of_scan_ins == 1) and (num_of_scan_outs == 1)):
+                        raise ValueError(f"ScanInterface '{self.icl_name}': chain '{chain['name']}' must have exactly one ScanInPort and one ScanOutPort (rule k)")
+
+        # 6.4.16 - l) If a scanInterfaceChain_def element is present, there shall be neither scanInterfacePort_def (with
+        # function ScanInPort or ScanOutPort) nor defaultLoad_def statements outside the
+        # scanInterfaceChain_def
+        for chain_1 in self.chains:
+            if ("!default-chain!" != chain_1["name"]):
+                for port in self.interface_ports_ref:
+                    icl_port = self.instance.get_icl_item_name(port.get_name())
+                    if isinstance(icl_port, (IclScanInPort, IclScanOutPort)):
+                        raise ValueError(f"ScanInterface '{self.icl_name}': ScanInPort/ScanOutPort '{port.get_name()}' must not appear outside scanInterfaceChain_def when chains are present (rule l)")
+                for chain_2 in self.chains:
+                    if ("!default-chain!" == chain_2["name"]):
+                        if chain_2["default"] is not None:
+                            raise ValueError(f"ScanInterface '{self.icl_name}': DefaultLoadValue must not appear outside scanInterfaceChain_def when chains are present (rule l)")
+                break
+        # 6.4.16 - m) Each scan interface of a module shall be uniquely selectable (with all other scan interfaces of that
+        # module disabled).
+        pass
+
+        # 6.4.16 - n) The scanInterfaceChain_name shall be unique within a scanInterface_def.
+        chain_names = [chain["name"] for chain in self.chains]
+        if len(chain_names) != len(set(chain_names)):
+            raise ValueError(f"ScanInterface '{self.icl_name}': duplicate chain names: {chain_names} (rule n)")
+
+        # 6.4.16 - o) The scanInterfacePort_def inside a scanInterfaceChain_def shall only include ports with function
+        # ScanInPort and ScanOutPort.
+        for chain in self.chains:
+            for port in chain["ports"]:
+                icl_port = self.instance.get_icl_item_name(port.get_name())
+                if not isinstance(icl_port, (IclScanInPort, IclScanOutPort)):
+                    raise ValueError(f"ScanInterface '{self.icl_name}': chain '{chain['name']}' port '{port.get_name()}' must be ScanInPort or ScanOutPort (rule o)")
+
+        # 6.4.16 - p) The scanInterfaceChain_def is only allowed in scanInterface_def of type client or client-TAP.
+        for chain in self.chains:
+            if ("!default-chain!" != chain["name"]):
+                if self.interface_type not in [CLIENT_SCAN_INTERFACE, CLIENT_TAP]:
+                    raise ValueError(f"ScanInterface '{self.icl_name}': scanInterfaceChain_def only allowed in client or client-TAP interface, not '{self.interface_type}' (rule p)")
+
+        # 6.4.16 - q) A scanInterfaceChain_def element shall include one scanInterfacePort_def with function
+        # ScanInPort and one with function ScanOutPort and each port shall only be referenced by a
+        # single scanInterfaceChain_def element.
+
+        # Top/handoff module checks — not part of the standard, custom enforcement
+        # For CLIENT_SCAN_INTERFACE (custom):
+        #   Requires TCKPort in the module — without it scan registers cannot be clocked
+        #   Requires ShiftEnPort — without it scan data cannot be shifted through scan registers
+                # 6.4.5 - j)A handoff module with at least one scanInPort_def shall have at least one shiftEnPort_def.
+        #   Warns if UpdateEnPort is missing — scan registers with update stage won't update
+        #   Warns if CaptureEnPort is missing — scan registers with capture won't capture
+        #   Warns if ResetPort is missing — resettable scan registers won't reset
+        # For CLIENT_TAP (custom):
+        #   Requires TCKPort in the module — without it scan registers cannot be clocked
+        if(self.instance.im_top_instace()):
+
+            if((self.interface_type == CLIENT_SCAN_INTERFACE) or (self.interface_type == CLIENT_TAP)):
+                num_of_tck_ports: int = sum([port.get_vector_size() for port in self.instance.get_icl_item_type(IclTckPort)])
+                if(num_of_tck_ports  == 0):
+                    raise ValueError(f"Scan interface:{self.get_name()} in Top/handoff instance {self.instance.get_name()} is missing TckPort port")
+
+            if(self.interface_type == CLIENT_SCAN_INTERFACE):
+                if(type_counter[IclShiftEnable] == 0):
+                    raise ValueError(f"Scan interface:{self.get_name()} in Top/handoff instance {self.instance.get_name()} is missing IclShiftEnable port")
+                if(type_counter[IclUpdateEnable] == 0):
+                    warnings.warn(f"Scan interface:{self.get_name()} in Top/handoff instance {self.instance.get_name()} is missing UpdateEnable port")
+                if(type_counter[IclCaptureEnable] == 0):
+                    warnings.warn(f"Scan interface:{self.get_name()} in Top/handoff instance {self.instance.get_name()} is missing CaptureEnable port")
+                if(type_counter[IclResetPort] == 0):
+                    warnings.warn(f"Scan interface:{self.get_name()} in Top/handoff instance {self.instance.get_name()} is missing ResetPort port")
+
+        # DefaultLoadValue syntax is validated above; actual use is not yet implemented
+        for chain in self.chains:
+            if(chain["default"]):
+                raise ValueError(f"DefaultLoadValue is not yet supported in: {self.ctx}/scan interface:{self.get_name_with_hier()}")
             
-        input("IclScanInterface")
-
 class IclPort(IclItem):
 
     def __init__(self, instance: IclInstance, ctx, port: IclSignal, attributes: list[IclAttribute] = None) -> None:
@@ -2019,7 +2512,7 @@ class AddPolarity():
             if polarity is not None:
                 assert(type(polarity) is bool)
             else:
-                polarity = bool(1)
+                self.polarities[port] = bool(1)
 
     def polarity_merge(self, item_source: "AddPolarity"):
         for port, value in item_source.polarities.items():
@@ -2029,6 +2522,18 @@ class AddPolarity():
     
     def get_polarites(self):
         return self.polarities
+    
+    def get_index_polarity(self, index: int) -> bool:
+        assert (index in self.get_all_indexes())
+        for icl_sig, polarity in self.polarities.items():
+            icl_sig : IclSignal
+            if len(icl_sig.get_indexes()) > 0:
+                if index in icl_sig.get_indexes():
+                    return polarity
+            else:
+                assert(len(self.polarities.keys()) == 1)
+                return polarity
+        raise RuntimeError(f"This code should have been unreachable")
 
 class AddClockSettings():
     def add_clock(self, port: IclSignal, clock_settings: dict) -> None:

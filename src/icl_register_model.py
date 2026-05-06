@@ -35,13 +35,14 @@ class IclRegisterModel():
         self.data_registers_smt: dict[str:smtDataReg] = {}
         self.tdr_sink_of_data_reg: dict = {}
         self.tdr_bit_data_reg_read_sink: dict = {}
-        self.jtag_steps: list[jtagStep] = []
+        self.jtag_steps: list[stepScanData] = []
 
         self.global_temp = None
 
         self.first_nodes = []
         self.last_nodes = []
         self.ir_out_names = []
+        self.jtag_reset: jtagReset = None
        
         eval_list = self.icl_instance.list_instances()
         for item in eval_list:
@@ -322,16 +323,17 @@ class IclRegisterModel():
                     for a,b, expr_smt, expr_py in icl_item.get_all_connections():
                         #print(a,b)
                         #print(f"{expr_smt} -> {self.trace_to_primaries(expr_smt)}")
-                        #print(f"{expr_py} -> {self.trace_to_primaries(expr_py)}")
+                        #print(f"{expr_py} -> {sympy_to_smt2(sympy_expression)}")
                         #input()
 
                         link = "sel_{}_{}".format(idx, b)
+                        sympy_expression = self.trace_to_primaries(expr_py)
                         icl_graph.add_node(link,
                             icl_type="mux_sel",
                             color="lightblue",
                             node_shape="rect",
-                            expr_smt=self.trace_to_primaries(expr_smt),
-                            expr_py=self.trace_to_primaries(expr_py),
+                            expr_smt=sympy_to_smt2(sympy_expression),
+                            expr_py=sympy_expression,
                             icl_item=icl_item)
                         icl_graph.add_edge(a, link)
                         icl_graph.add_edge(link, b) 
@@ -476,16 +478,16 @@ class IclRegisterModel():
         icl_item: IclItem = self.icl_instance.get_icl_item_name(self.remove_trailing_numbers(name))
         expression: str = ""
 
-        if(type(icl_item) in [IclLogicSignal]):                  
-            expression = icl_item.processed_expression
+        if isinstance(icl_item, IclLogicSignal):
+            expression = icl_item.get_sympy_expression()
 
-        elif(type(icl_item) in [IclScanMux]):
+        elif isinstance(icl_item, IclScanMux):
             for mux_in, mux_out, expr_smt, expr_py in icl_item.get_all_connections():
                 if(name == mux_out):
-                    expression = f"(And {mux_in} {expr_smt}) {expression}"
+                    expression = f"(And {mux_in} {expr_py}) {expression}"
             expression = f"(Or {expression})"	
 
-        elif (type(icl_item) in [IclOneHotDataGroup]):
+        elif isinstance(icl_item, IclOneHotDataGroup):
             full_expression = ""
             step_idx = self.get_step(name)
             for sel in icl_item.selectee:
@@ -660,7 +662,7 @@ class IclRegisterModel():
                         for idx, unfinised_node in enumerate(unfinised_nodes):
                             node_name, visits = unfinised_node
                             if(node == node_name):
-                                unfinised_nodes[idx] = (node_visits[node], out_node_num)
+                                unfinised_nodes[idx] = (node, out_node_num)
                                 break
                         
                     if(not stack):
@@ -716,13 +718,13 @@ class IclRegisterModel():
             if( len(out_nodes) > 1):
                 exp_py = icl_graph.nodes[node]["expr_py"]
                 print(f"Simplify selection logic of node: {node} - {exp_py}")
-                exp_py = exp_py.replace(".", "_w__q_")
-                exp_py = self.simplify_symbol_repr(srepr(simplify_logic(sympify(exp_py))))
-                exp_py = exp_py.replace("_w__q_", ".")
+                exp_py = exp_py.replace(".", "__DOT__")
+                exp_py = self.simplify_symbol_repr(srepr(simplify_logic(sympify(exp_py), form='dnf')))
+                exp_py = exp_py.replace("__DOT__", ".")
                 icl_graph.nodes[node]["expr_py"] = exp_py
                 print(f"Simplified selection logic of node: {node} - {exp_py}")
 
-            icl_graph.nodes[node]["expr_smt"] = self.refine_to_smt2(icl_graph.nodes[node]["expr_py"])
+            icl_graph.nodes[node]["expr_smt"] = sympy_to_smt2(icl_graph.nodes[node]["expr_py"])
             #icl_graph.nodes[node]["sel_py_items"] = []
             #print(icl_graph.nodes[node])
 
@@ -761,7 +763,7 @@ class IclRegisterModel():
         for node in self.icl_graph:
             for tag in tag_table:
                 tag_name, tag_exp = tag
-                pattern = r'({0}\b)'.format(tag_name.replace(".", "\."))
+                pattern = r'({0}\b)'.format(tag_name.replace(".", r"\."))
                 if "expr_smt" in icl_graph.nodes[node]:
                     print("pattern", pattern, tag_exp)
                     print("Simplify selection logic of node:", icl_graph.nodes[node]["expr_smt"])
@@ -775,32 +777,7 @@ class IclRegisterModel():
                 if("expr_smt" in icl_graph.nodes[node]):
                     icl_graph.nodes[node]["icl_item"].scan_selection_smt = icl_graph.nodes[node]["expr_smt"]
 
-    def refine_to_smt2(self, expr):
-        # Replace logical operators with their SMT2 format
-        replacements = {
-            "And": "and",
-            "Or": "or",
-            "Not": "not",
-            ",": " "
-        }
-
-        for old, new in replacements.items():
-            expr = expr.replace(old, new)
-
-        # Correctly format the expression with spaces and parentheses for SMT2
-        expr = expr.replace("and(", "(and ").replace("or(", "(or ").replace("not(", "(not ")
-        expr = expr.replace(") ", ")").replace("  ", " ")  # Remove extra spaces and adjust closing parentheses
-
-        # Encapsulate the entire expression with an additional set of parentheses if not already present
-        #if not expr.startswith("("):
-        #    expr = f"({expr})"
-
-        if "(true)" in expr:
-            expr = "true"
-        if "(false)" in expr:
-            expr = "false"
-
-        return expr
+        print("traverse_iterative done\n")
 
 
     def simplify_symbol_repr(self, expression_str):
@@ -867,9 +844,28 @@ class IclRegisterModel():
         
         self.icl_graph = scan_path_graph
         
-        return IclRetargeting(self.scan_registers, self.data_registers_smt, sel_muxes_smt, ono_hot_data_groups, self.ir_out_names, 6)
-    
-    def iReset(self):
+        self.one_hot_scan_interfaces: dict[str,list[str]] = {}
+        interfaces: list[IclScanInterface] = self.icl_instance.get_icl_item_type(IclScanInterface)                   
+        self.interface_chains = {}
+        for interface in interfaces:
+            scan_out_ports = []
+            for chain in interface.chains:
+                chain_name = chain["name"]
+                tmp = []
+                for port_ref in chain["ports"]:
+                    icl_port: IclItem = self.icl_instance.get_icl_item_name(port_ref.get_name())
+                    if isinstance(icl_port, IclScanOutPort):                   
+                        icl_port_ref_indexes = self.icl_instance.get_signal_indexes(interface.instance, port_ref)
+                        for index in icl_port_ref_indexes:
+                            scan_out_ports.append(add_last_number(icl_port.get_name(), index))
+                            tmp.append(add_last_number(icl_port.get_name(), index))
+                        self.interface_chains[interface.get_name()] = {chain_name: tmp}
+            self.one_hot_scan_interfaces[interface.get_name()] = scan_out_ports
+
+        result = IclRetargeting(self.scan_registers, self.data_registers_smt, sel_muxes_smt, ono_hot_data_groups, self.ir_out_names, 6, self.one_hot_scan_interfaces)
+        return result
+
+    def iReset(self, sync):
         for _ ,reg in self.scan_registers.items():
             reg.reset()
         for _ ,reg in self.data_registers.items():
@@ -894,7 +890,6 @@ class IclRegisterModel():
             size = len(reg_bits) - 1
             direction:bool = scan_reg.icl_name.get_direction()
             for idx, reg_bit in enumerate(reg_bits):
-                reg_bit = reg_bit.replace('.', '_')
                 network_start[reg_bit] = scan_reg.current_value.get_bin_bit_str(size - idx) if direction else scan_reg.current_value.get_bin_bit_str(idx)
 
                 #if(scan_reg.get_name_with_hier() == "u_tap.ir"):
@@ -913,7 +908,6 @@ class IclRegisterModel():
             size = len(reg_bits) - 1
             direction:bool = reg.icl_name.get_direction()
             for idx, reg_bit in enumerate(reg_bits):
-                reg_bit = reg_bit.replace('.', '_')
                 read_indication_bit = f"read_{reg_bit}"
 
                 network_start[reg_bit] = reg.current_value.get_bin_bit_str(size - idx) if direction else reg.current_value.get_bin_bit_str(idx)
@@ -930,20 +924,22 @@ class IclRegisterModel():
                     network_end[reg_bit] = reg.next_value.get_bin_bit_str(size - idx) if direction else reg.next_value.get_bin_bit_str(idx)
 
                     # print(reg_bit, idx, reg, network_start[reg_bit], "->", network_end[reg_bit])
-                    network_other[f"sel_group_data_reg_written_{reg.get_name_with_hier()}".replace('.', '_')] = 1
+                    network_other[f"sel_group_data_reg_written_{reg.get_name_with_hier()}"] = 1
 
         #for name, reg_bit in self.registers_smt.items():
         #    print(name, reg_bit)
         #print(network_start)
         #print(network_end)
 
-        self.retargeter.retarget(network_start, network_end, network_other)
+        assert not self.retargeter.retarget(network_start, network_end, network_other)
         steps = self.retargeter.get_steps()
 
         vectors = {}
         # print("steps", steps)
         for step in steps:
-            jtag_step: jtagStep = jtagStep()
+            jtag_step: stepScanData = stepScanData()
+            jtag_chain: chainScanData = chainScanData()
+
 
             if(step == 0):
                 continue
@@ -956,13 +952,32 @@ class IclRegisterModel():
             jtag_step.type_of_chain = "IR" if (self.retargeter.get_bit(self.retargeter.C_IR_DR_STATE, from_data)) else "DR"
 
             # Determine which scan_in -> scan_out is used
-            used_tdo_name = ""
-            for tdo_name in self.last_nodes:
-                if(self.retargeter.get_bit(tdo_name, to_data)):
-                    used_tdo_name = tdo_name
-                    break
+            #print("one_hot_scan_interfaces:", self.one_hot_scan_interfaces)
+            for interface_name, scan_out_ports in self.one_hot_scan_interfaces.items():
+                print(scan_out_ports, self.one_hot_scan_interfaces)
+                assert(len(scan_out_ports) == 1)
+                #print(interface_name, to_data, self.retargeter.get_bit(interface_name+"_0000", step))
+                #print(self.interface_chains)
+                if self.retargeter.get_bit(f"{interface_name}_0000", step):
+                    #print("xx")
+                    for chain_name, chains in self.interface_chains[interface_name].items():
+                        #print("dd")
+                        jtag_step.scan_interface_name = interface_name
+                        jtag_step.chain[chain_name] = jtag_chain                        
+                        #print("ssss",interface_name, chain_name)
+                        used_tdo_name = chains[0]
+                        break
+                    
             assert(used_tdo_name != "")
-            jtag_step.tdo_port = used_tdo_name
+            jtag_chain.tdo_port = used_tdo_name
+
+            #used_tdo_name = ""
+            #for tdo_name in self.last_nodes:
+            #    if(self.retargeter.get_bit(tdo_name, to_data)):
+            #        used_tdo_name = tdo_name
+            #        break
+            #assert(used_tdo_name != "")
+            #jtag_chain.tdo_port = used_tdo_name
 
 
             # Get DR/IR chain of current data
@@ -972,16 +987,19 @@ class IclRegisterModel():
             # Get DR/IR chain of new data
             reg_bit_name_list, vector_string = self.traverse_graph_2(used_tdo_name, self.icl_graph, self.retargeter, from_data, to_data)
             print(f'TO   -> Type: {jtag_step.type_of_chain}, vector {vector_string}, step: {step}, scan_regs: {compress_signal_list(reg_bit_name_list)}')
-            jtag_step.in_data = vector_string
-            jtag_step.in_data_names = reg_bit_name_list
+            jtag_chain.in_data = vector_string
+            jtag_chain.in_data_names = reg_bit_name_list
 
             # Get TDI PORT
+            # Start tracking back from first scan register to TDI port
+            # Flaw of this method is that if first register is accessible
+            # from more than one TDI port, it may select a wrong TDI port
             in_nodes = [reg_bit_name_list[0]]
             while(len(in_nodes) > 0):
                 tmp = in_nodes.pop()
                 for pred in self.icl_graph.predecessors(tmp):
                     in_nodes.append(pred)
-            jtag_step.tdi_port = tmp
+            jtag_chain.tdi_port = tmp
 
             # Get data reg bit read chain, where it indicate if bit contatins any read data from data register
             data_reg_bit_read_list = []
@@ -1017,11 +1035,11 @@ class IclRegisterModel():
                     debug.append("-")
             print(f"data_reg_bit_read_list -> {compress_signal_list(data_reg_bit_read_list)}")
             #print(f"data_reg_bit_read_list -> {debug}")
-            jtag_step.read_data_bit_names = data_reg_bit_read_list
+            jtag_chain.read_data_bit_names = data_reg_bit_read_list
 
             # Get expected read data
             data_reg_read_vector = []
-            for read_bit in jtag_step.read_data_bit_names:
+            for read_bit in jtag_chain.read_data_bit_names:
                 if(read_bit == "-"):
                     data_reg_read_vector.append("X")
                 else:
@@ -1036,7 +1054,7 @@ class IclRegisterModel():
                         data_reg_read_vector.append("X")
 
             test_reg_read_vector = []
-            for read_bit in jtag_step.in_data_names:
+            for read_bit in jtag_chain.in_data_names:
                     icl_item_idx: int = get_last_number(read_bit)
                     scan_reg: IclScanRegister = self.icl_instance.get_icl_item_name(self.remove_trailing_numbers(read_bit))
                     expected_value : IclNumber = scan_reg.get_expected_bits()
@@ -1054,16 +1072,16 @@ class IclRegisterModel():
                     final_read_vector.append(data_reg_bit)
                 elif(test_reg_bit in ["1"]):
                     final_read_vector.append(test_reg_bit)
-                    assert(data_reg_bit != 0)
+                    assert(data_reg_bit != "0")
                 elif(test_reg_bit in ["0"]):
                     final_read_vector.append(test_reg_bit)
-                    assert(data_reg_bit != 1)
+                    assert(data_reg_bit != "1")
                 else:
                     raise RuntimeError(f"Programming error -> {test_reg_bit}")
 
             final_read_vector = "".join(final_read_vector)
-            jtag_step.exp_data = final_read_vector
-            print(f"jtag_step.exp_data -> {jtag_step.exp_data}")                    
+            jtag_chain.exp_data = final_read_vector
+            print(f"jtag_chain.exp_data -> {jtag_chain.exp_data}")                    
 
             # print(f"from u_regs_rosc_cut_lvt.u_sib_data.sib_0000 -> {self.retargeter.get_bit('u_regs_rosc_cut_lvt.u_sib_data.sib_0000', from_data)}")
             # print(f"to   u_regs_rosc_cut_lvt.u_sib_data.sib_0000 -> {self.retargeter.get_bit('u_regs_rosc_cut_lvt.u_sib_data.sib_0000', to_data)}")
@@ -1072,9 +1090,9 @@ class IclRegisterModel():
 
             # Update scan registers
             idx = 0
-            for name in reg_bit_name_list:
-                reg_name = re.search(r'(.+?)_(\d+)$', name).group(1)
-                number = re.findall(r'\d+', name)[-1]
+            for interface_name in reg_bit_name_list:
+                reg_name = re.search(r'(.+?)_(\d+)$', interface_name).group(1)
+                number = re.findall(r'\d+', interface_name)[-1]
                 # print(reg_name, number, int(vector_string[idx]))
                 if(reg_name in self.scan_registers):
                     self.scan_registers[reg_name].set_current_bit(int(vector_string[idx]), int(number))
@@ -1082,7 +1100,7 @@ class IclRegisterModel():
                 else:
                     raise ValueError(f"Register name: {reg_name}, not found")
                 idx += 1
-        
+
             self.jtag_steps.append(jtag_step)
 
         # Clear any iWrite to do Flag
@@ -1104,7 +1122,7 @@ class IclRegisterModel():
         return vectors
     
     # Get vectors that iApply calculated
-    def getiApplyVectors(self) -> list[jtagStep]:
+    def getiApplyVectors(self) -> list[stepScanData]:
         return self.jtag_steps
 
     def traverse_graph_2(self, start_node, icl_graph, data, from_step, to_step):
@@ -1176,8 +1194,10 @@ def parse(tokens):
     elif token == ')':
         raise ValueError("Unexpected )")
     else:
-        if(token in ["True", "true", "False", "False"]):
-            return bool(token)
+        if token in ["True", "true"]:
+            return bool(1)
+        elif token in ["False", "false"]:
+            return bool(0)
         else:
             return token
 
@@ -1199,9 +1219,9 @@ def eval_sexpr(node):
     elif op == 'not':
         assert(len(node) == 2)
         if eval_sexpr(node[1]) == 0:
-            return bool(0)
+            return bool(1)
         else:
-            return bool(1) 
+            return bool(0) 
     elif op == 'or':
         for a in args:
             if eval_sexpr(a) == 1:

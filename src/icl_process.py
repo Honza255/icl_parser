@@ -43,7 +43,7 @@ class IclProcess(iclListener):
         self.parameters = {}
 
         # Parsed data
-        self.parsed_icl_modules: dict[str: IclInstance] = {}
+        self.parsed_icl_modules: dict[str, IclInstance] = {}
 
     def print_tree(self, node, indent=""):
         # Check if the node is a terminal node (i.e., has no children)
@@ -1000,7 +1000,7 @@ class IclProcess(iclListener):
                 modified_instance.hier = instance_hier
                 modified_instance.attributes = icl_eval_lis.icl_instance.attributes
                 modified_instance.connections = icl_eval_lis.icl_instance.connections
-                modified_instance.parameters_override = icl_eval_lis.icl_instance
+                modified_instance.parameters_override = icl_eval_lis.icl_instance.parameters_override
                 mod_instance(modified_instance, modified_instance.hier)
                 self.icl_instance.add_icl_item(modified_instance)
 
@@ -1139,7 +1139,7 @@ class IclProcess(iclListener):
                 if (item.dataInPort_defaultLoadValue()):
                     if not default_value:
                         if item.dataInPort_defaultLoadValue().concat_number():
-                            default_value = self.result[item.dataInPort_defaultLoadValue().concat_data_signal()]
+                            default_value = self.result[item.dataInPort_defaultLoadValue().concat_number()]
                         else:
                             default_value = self.result[item.dataInPort_defaultLoadValue().enum_symbol()]                           
                     else:
@@ -1278,13 +1278,16 @@ class IclProcess(iclListener):
         elif ctx.resetPort_def():   
             new_ctx: iclParser.ResetPort_defContext = ctx.resetPort_def()
             port = self.result[new_ctx.resetPort_name().port_name()]
-            polarity: bool = None
+            # Default polarity is 1
+            polarity: bool = bool(1)
+            polarity_encounter = 0
 
             for item in new_ctx.resetPort_item():
                 if item.resetPort_polarity():
-                    if not polarity:
-                        polarity = bool(int(item.resetPort_polarity().getChild(1).getText()))
-                    else:
+                    polarity = bool(int(item.resetPort_polarity().getChild(1).getText()))
+
+                    polarity_encounter += 1
+                    if polarity_encounter > 1:
                         raise ValueError(f"More than one polarity' {ctx.getText()}")
                     
             icl_item = IclResetPort(self.icl_instance, ctx.getText(), port, attributes, polarity)
@@ -1298,14 +1301,18 @@ class IclProcess(iclListener):
             new_ctx: iclParser.ToResetPort_defContext = ctx.toResetPort_def()
             port = self.result[new_ctx.toResetPort_name().port_name()]
             source: ConcatSig = None
-            polarity: bool = None
+            # Default polarity is 1
+            polarity: bool = bool(1) 
+            polarity_encounter = 0
 
             for item in new_ctx.toResetPort_item():
                 if item.toResetPort_polarity():
-                    if not polarity:
-                        polarity = bool(int(item.toResetPort_polarity().getChild(1).getText()))
-                    else:
+                    polarity = bool(int(item.toResetPort_polarity().getChild(1).getText()))
+
+                    polarity_encounter += 1
+                    if polarity_encounter > 1:
                         raise ValueError(f"More than one polarity' {ctx.getText()}")
+                                        
                 elif item.toResetPort_source():
                     if not source:
                         source = self.result[item.toResetPort_source().concat_reset_signal()]
@@ -1416,7 +1423,7 @@ class IclProcess(iclListener):
                         freq_div = int(item.freqDivider_def().pos_int().getText())
                     else:
                         raise ValueError(f"More than one freq. div.' {ctx.getText()}")
-                if item.differentialInvOf_def():
+                elif item.differentialInvOf_def():
                     if not diff_port:
                         diff_port = self.result[item.differentialInvOf_def().concat_clock_signal()]
                     else:
@@ -1536,7 +1543,6 @@ class IclProcess(iclListener):
     #                         defaultLoad_def ;
     # defaultLoad_def : 'DefaultLoadValue' concat_number ';' ;
     def exitScanInterface_def(self, ctx):
-        return
         interface_name = ctx.scanInterface_name().SCALAR_ID().getText()     
         interface_attributes: list[IclAttribute] = []
         interface_ports: list[IclSignal] = []
@@ -1545,8 +1551,16 @@ class IclProcess(iclListener):
         has_interface_chain = 0
 
         for item in ctx.scanInterface_item():
-            if item.scanInterfaceChain_def():
-                chain_name =  self.result[item.scanInterfaceChain_def().scanInterfaceChain_name().SCALAR_ID().getText()]
+            if item.attribute_def():
+                attribute_def = self.result[item.attribute_def()]
+                interface_attributes.append(attribute_def)  
+
+            elif item.scanInterfacePort_def():
+                port:IclSignal = self.result[item.scanInterfacePort_def().reg_port_signal_id()]
+                interface_ports.append(port)
+
+            elif item.scanInterfaceChain_def():
+                chain_name = item.scanInterfaceChain_def().scanInterfaceChain_name().SCALAR_ID().getText()
 
                 has_interface_chain = 1
 
@@ -1557,18 +1571,18 @@ class IclProcess(iclListener):
                     "default": None,
                 }
 
-                for chain_item in ctx.scanInterfaceChain_item():
+                for chain_item in item.scanInterfaceChain_def().scanInterfaceChain_item():
                     if chain_item.attribute_def():
-                        attribute_def = self.result[item.attribute_def()]
+                        attribute_def = self.result[chain_item.attribute_def()]
                         new_chain["attr"].append(attribute_def)
 
                     elif chain_item.defaultLoad_def():
                         if(new_chain["default"]):
                             raise ValueError(f"More than two default values: {ctx.getText()}")
-                        new_chain["default"] = self.result[item.defaultLoad_def().concat_number()]  
+                        new_chain["default"] = self.result[chain_item.defaultLoad_def().concat_number()]
 
                     elif chain_item.scanInterfacePort_def():
-                        port:IclSignal = self.result[item.scanInterfacePort_def().reg_port_signal_id()]
+                        port:IclSignal = self.result[chain_item.scanInterfacePort_def().reg_port_signal_id()]
                         new_chain["ports"].append(port)
                         if(len(new_chain["ports"]) > 2):
                             raise ValueError(f"More than two ports in chain: {ctx.getText()}")
@@ -1577,37 +1591,35 @@ class IclProcess(iclListener):
 
                 chains.append(new_chain)
 
-
-        for item in ctx.scanInterface_item():
-            if item.attribute_def():
-                attribute_def = self.result[item.attribute_def()]
-                interface_attributes.append(attribute_def)  
-            elif item.scanInterfacePort_def():
-                port:IclSignal = self.result[item.scanInterfacePort_def().reg_port_signal_id()]
-                interface_ports.append(port)
             elif item.defaultLoad_def():
-                new_chain: dict ={
-                    "name": "!unamed!",
-                    "attr": [],
-                    "ports": [],
-                    "default": None,
-                }   
-
-                if has_interface_chain:
-                    raise ValueError(f"DefaultLoad can not be specified when scanInterfaceChain is in scan interface: {ctx.getText()}")
-                else:
-                    if(chains):
-                        raise ValueError(f"More than two default values: {ctx.getText()}")
-                    else:                                  
-                        new_chain["default"] = self.result[item.defaultLoad_def().concat_number()]
-                        chains.append(new_chain)
-            elif item.scanInterfaceChain_def():
                 pass
             else:
                 raise ValueError(f"Non valid state")
+
+        default_new_chain = None
+        if not chains:
+            default_new_chain: dict ={
+                "name": "!default-chain!",
+                "attr": [],
+                "ports": interface_ports,
+                "default": None,
+            }   
+
+        default_load_encounters = 0
+        for item in ctx.scanInterface_item():
+            if item.defaultLoad_def():
+                if has_interface_chain:
+                    raise ValueError(f"DefaultLoad can not be specified when interface already has scanInterfaceChain: {ctx.getText()}")
+                else:
+                    default_load_encounters += 1
+                    if(default_load_encounters > 1):
+                        raise ValueError(f"More than one DefaultLoadValue: {ctx.getText()}")
+                    else:                                  
+                        default_new_chain["default"] = self.result[item.defaultLoad_def().concat_number()]
+        if default_new_chain:
+            chains.append(default_new_chain)
       
         scan_interface = IclScanInterface(self.icl_instance, interface_name, interface_attributes, interface_ports, chains, ctx.getText())
-        input("ADD")
         self.icl_instance.add_icl_item(scan_interface)
         self.result[ctx] = scan_interface
 
