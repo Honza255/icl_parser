@@ -17,7 +17,7 @@ class Ijtag:
     # top_name :      Top ICL module name
     # icl_files:      ICL files
     # iclude_folders: Where to look for ICL files without absolute path
-    def __init__(self, top_module_name: str, icl_files: list[str], iclude_folders: list[str] = []):
+    def __init__(self, top_module_name: str, icl_files: list[str], iclude_folders: list[str] = [], build_register_model: bool = True):
 
         assert(type(icl_files) == list)
         assert(type(iclude_folders) == list)
@@ -52,8 +52,9 @@ class Ijtag:
 
         all_icl_modules = self.__pre_process_icl_files(abb_path_icl_files)
         self.icl_instance = self.__process_icl_module(all_icl_modules, top_module_name)
-        self.ijtag_reg_model = IclRegisterModel(self.icl_instance)
-        self.icl_retargeter = self.ijtag_reg_model.retargeter
+        if build_register_model:
+            self.ijtag_reg_model = IclRegisterModel(self.icl_instance)
+            self.icl_retargeter = self.ijtag_reg_model.retargeter
 
     def iWrite(self, reg_or_port: str, value: str = ""):
         assert(isinstance(reg_or_port, str))
