@@ -1,5 +1,5 @@
 // PDL0 grammar v20130806
-grammar PDL;
+grammar pdl;
 
 pdl_source : (WS | eoc | pdl_level_def | iprocsformodule_def | iuseprocnamespace_def | iproc_def | SL_COMMENT)+ ;
 
@@ -41,17 +41,17 @@ keyword : 'iPDLLevel' |
 // Generic Identifiers
 // *******************
 instancePath : dot_id;
-scanInterface_name : (instancePath DOT)? scalar_id 
+scanInterface_name : (instancePath DOT)? scalar_id ;
 port: hier_signal ;
 reg_or_port: hier_signal ;
 reg_port_or_instance : hier_signal ;
 hier_signal : (instancePath DOT)? reg_port_signal_id | ARGUMENT_REF ;
 
 reg_port_signal_id: scalar_id | vector_id ;
-vector_id:     scalar_id LBRACKET ( index | range ) RBRACKET
-            |  scalar_id LPAREN   ( index | range ) RPAREN;
+vector_id:     scalar_id LBRACKET ( index | pdl_range ) RBRACKET
+            |  scalar_id LPAREN   ( index | pdl_range ) RPAREN;
 index : pdl_number;
-range : index COLON index ;
+pdl_range : index COLON index ;
 enum_name : scalar_id ;
 instance_name : scalar_id ;
 
@@ -98,7 +98,7 @@ TSUFFIX : 's' | 'ms' | 'us' | 'ns' | 'ps' | 'fs' | 'as' ;
 // ====================
 SL_COMMENT : '#' (~('\r'|'\n'))* ;
 WS : ( ' ' | '\t' | '\\' '\r'? '\n' )+ ;
-QUOTED : '"' (~('\"'))* '"' ; // Collapse into one token (mainly for iNote)
+QUOTED : '"' (~('"'))* '"' ; // Collapse into one token (mainly for iNote)
 eoc : SEMICOLON | NL;
 SEMICOLON : ';';
 NL : '\r'? '\n' ;
@@ -182,7 +182,7 @@ iclock_override_def : 'iClockOverride' WS sysClock
                        (WS '-freqMultiplier' WS POS_INT)?
                        (WS '-freqDivider' WS POS_INT)? ;
 // -------
-irunloop_def : 'iRunLoop' WS ( cycleCount ( WS '-tck' | WS '-sck' port )? | '-time' WS tvalue);
+irunloop_def : 'iRunLoop' WS ( cycleCount ( WS '-tck' | WS '-sck' WS port )? | '-time' WS tvalue);
 
 // -------
 imerge_def : 'iMerge' WS ( '-begin' | '-end' );
@@ -201,11 +201,11 @@ istate_def : 'iState' WS reg_or_port WS pdl_number (WS '-LastWrittenValue' | WS 
 
 //PDL1 grammar 20120328
 // -------
-iget_read_data_def : 'iGetReadData' WS (reg_or_port | scanInterface_name (WS '–chain' WS chain_id)? ) ( WS format )? ;
-format : '-dec' | '-bin' | '-hex' ;
+iget_read_data_def : 'iGetReadData' WS (reg_or_port | scanInterface_name (WS '–chain' WS chain_id)? ) ( WS pdl_format )? ;
+pdl_format : '-dec' | '-bin' | '-hex' ;
 
 // -------
-iget_miscompares_def : 'iGetMiscompares' (reg_or_port | scanInterface_name (WS '–chain' WS chain_id)? ) ( WS format )? ;
+iget_miscompares_def : 'iGetMiscompares' (reg_or_port | scanInterface_name (WS '–chain' WS chain_id)? ) ( WS pdl_format )? ;
 iget_status_def : 'iGetStatus' ( '-clear' )? ;
 iset_fail_def : 'iSetFail' text_message ( '-quit' )? ;
-text_message : string ;
+text_message : QUOTED ;
