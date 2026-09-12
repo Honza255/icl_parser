@@ -3,6 +3,16 @@ grammar pdl;
 
 pdl_source : (WS | eoc | pdl_level_def | iprocsformodule_def | iuseprocnamespace_def | iproc_def | SL_COMMENT)+ ;
 
+// Additional entry point (not part of the original grammar) for a flat command sequence with
+// no enclosing iProc{} wrapper -- e.g. a bare history of iWrite/iRead/iApply/iRunLoop
+// statements. `commands` alone is also used mid-grammar inside iproc_def's own body, where it
+// deliberately must NOT require EOF; this rule exists so a caller parsing a flat sequence as
+// an entire, self-contained input can require full consumption instead of silently accepting
+// an empty (zero-repetition) match and leaving everything after the first unrecognized token
+// unconsumed with no reported error -- a real gotcha of invoking `commands` directly as an
+// ANTLR entry point.
+flat_commands : commands EOF ;
+
 // ===========
 // Identifiers
 // ===========

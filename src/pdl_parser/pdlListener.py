@@ -17,6 +17,15 @@ class pdlListener(ParseTreeListener):
         pass
 
 
+    # Enter a parse tree produced by pdlParser#flat_commands.
+    def enterFlat_commands(self, ctx:pdlParser.Flat_commandsContext):
+        pass
+
+    # Exit a parse tree produced by pdlParser#flat_commands.
+    def exitFlat_commands(self, ctx:pdlParser.Flat_commandsContext):
+        pass
+
+
     # Enter a parse tree produced by pdlParser#dot_id.
     def enterDot_id(self, ctx:pdlParser.Dot_idContext):
         pass
