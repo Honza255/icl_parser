@@ -10,7 +10,7 @@ from tests.config import  IjtagSimulationDriver
 from src.ijtag import *
 
 import cocotb
-from cocotb_tools.runner import get_runner
+from cocotb_tools.runner import get_runner, get_results
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
 
@@ -30,12 +30,14 @@ class TestIclSyntax7(unittest.TestCase):
             waves=True
         )
 
-        runner.test(
+        result = runner.test(
             hdl_toplevel=module_name,
             test_module=["tests.test_icl_syntax_7"],
             testcase=["test_icl_syntax_7_test"],
             waves=1
         )
+        if get_results(result)[1]:
+            self.fail("Cocotb simulation failed")
 
 @cocotb.test()
 async def test_icl_syntax_7_test(dut):

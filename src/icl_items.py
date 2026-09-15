@@ -28,6 +28,12 @@ class IclSignal:
     def get_direction(self) -> bool:
         return self.dir_right_to_left
 
+    def get_right_index(self) -> int:
+        return self.get_direction() if self.get_indexes()[0] else self.get_indexes()[-1]
+
+    def get_left_index(self) -> int:
+        return self.get_direction() if self.get_indexes()[-1] else self.get_indexes()[0]
+            
     def add_hiearachy(self, hier_lvl: str):
         self.hier.append(hier_lvl)
 
@@ -553,17 +559,20 @@ class ConcatSig():
             difference = source_size - min_size
             assert(difference >= 0)
         
-def checkSigExistance(instance: "IclInstance", singal:IclSignal):
+def checkSigExistance(instance: "IclInstance", signal:IclSignal):
     # print(singal.get_relative_name())
-    icl_item = instance.get_icl_item_name(singal.get_relative_name())
+    icl_item = instance.get_icl_item_name(signal.get_relative_name())
 
     item_indexes = icl_item.get_all_indexes()
-    signal_indexes = singal.get_indexes()
-    ls1 = [element for element in item_indexes if element in signal_indexes]
-    ls2 = [element for element in signal_indexes if element in item_indexes]
-    if (sorted(ls1) != sorted(ls2)):
-        raise ValueError(signal_indexes, "not present in", icl_item.get_name_with_hier(), item_indexes, signal_indexes, ls1, ls2)
-    
+    signal_indexes = signal.get_indexes()
+    missing_signal_indexes = []
+    for sig_idx in signal_indexes:
+        if not sig_idx in item_indexes:
+            missing_signal_indexes.append(sig_idx)
+
+    if missing_signal_indexes:
+        raise ValueError(f"{icl_item.get_name_with_hier()}{missing_signal_indexes} not present in {icl_item.get_name_with_hier()}{item_indexes}")
+
 class IclItem:
 
     def __init__(
@@ -867,7 +876,8 @@ class IclInstance(IclItem):
                             icl_port = self.instance.get_icl_item_name(port.get_name())
                             if(not isinstance(icl_port, (IclScanInPort, IclScanOutPort))):
                                 continue
-                            for port_idx in icl_port.get_all_named_indexes():
+                            icl_sigs = self.instance.get_signal_all_named_indexes(self.instance, [port])
+                            for port_idx in icl_sigs:
                                 assert(port_idx in all_ports)
                                 all_ports.remove(port_idx)
                 assert(len(all_ports) == 0)
@@ -1085,13 +1095,14 @@ class IclScanRegister(IclItem):
         # Inital values
         self.icl_name = scan_reg
         self.in_attributes: list[IclAttribute] = in_attributes
-        self.scan_in: IclSignal = in_scan_in_source
+        self.scan_in_source: IclSignal = in_scan_in_source
         self.in_default_value: ConcatSig | EnumRef = in_default_value
         self.in_capture_source: ConcatSig | EnumRef = in_capture_source
         self.in_reset_value: ConcatSig | EnumRef = in_reset_value
         self.in_ref_enum: str = in_ref_enum
 
         # Assigned by function check (transforming EnumRef to ConcatSig + size checks)
+        self.checked_scan_in_source_name: str
         self.capture_source: ConcatSig = None
         self.reset_source: ConcatSig = None
         self.default_value_source: ConcatSig = None
@@ -1192,14 +1203,7 @@ class IclScanRegister(IclItem):
         return self.get_item_all_named_indexes(self.icl_name)[-1]
         
     def get_scanin_named_index(self) -> str:
-        scan_in = self.get_signal_all_named_indexes(self.instance, [self.scan_in])
-        assert(len(scan_in) == 1)
-        return scan_in[0]
-
-    def get_scancapture_named_index(self) -> str:
-        scan_in = self.get_signal_all_named_indexes(self.instance, [self.capture_source])
-        assert(len(scan_in) == 1)
-        return scan_in[0]
+        return self.checked_scan_in_source_name
     
     def get_enum_reference(self) -> str:
         return self.in_ref_enum
@@ -1241,6 +1245,39 @@ class IclScanRegister(IclItem):
             self.default_value_source.check_fit(self.get_vector_size())
             if not self.default_value_source.sized_number():
                 self.default_value_source.resize(self.get_vector_size())
+
+
+        # Check, scan in source,
+        # 1. Make sure it exits
+        # 2. Make sure it maps to one bit source
+        # 3. If source points to scan register, make sure it points to the rightmost index
+        if not self.scan_in_source:
+            raise ValueError(f"Scan in source is not defined: {self.get_name_with_hier()} -> {self.ctx}")
+        else:
+            checkSigExistance(self.get_instance(), self.scan_in_source);
+            icl_item = self.instance.get_icl_item_name(self.scan_in_source.get_relative_name())           
+            signal_full_name = icl_item.get_name_with_hier()  
+            source = self.get_signal_all_named_indexes(self.instance, [self.scan_in_source])
+            assert(len(source) > 0)    
+
+            if self.scan_in_source.get_size() == 0:
+                if len(source) == 1:
+                    self.checked_scan_in_source_name = source[0]
+                elif len(source) > 1:
+                    if isinstance(icl_item, IclScanRegister):
+                        self.checked_scan_in_source_name = add_last_number(signal_full_name, icl_item.get_lsb_index())
+                    else:                   
+                        raise ValueError(f"Scan in source {self.scan_in_source} points to multibit source, define which bit: {self.get_name_with_hier()} -> {self.ctx}")                    
+            elif self.scan_in_source.get_size() == 1:
+                    if isinstance(icl_item, IclScanRegister):
+                        if self.scan_in_source.get_indexes()[0] == self.scan_in_source.get_right_index():
+                            self.checked_scan_in_source_name = source[0]
+                        else:
+                            raise ValueError(f"Scan in source {self.scan_in_source} points to ScanRegister source, but not to rightmost index : {self.get_name_with_hier()} -> {self.ctx}")                    
+                    else:
+                        self.checked_scan_in_source_name = source[0]
+            else:
+                raise ValueError(f"Scan in source {self.scan_in_source} is defined as range, only one bit input is allowed: {self.get_name_with_hier()} -> {self.ctx}")
 
         
         # Calculate default value
@@ -2418,6 +2455,32 @@ class AddPortSource():
         self.sources: dict[IclSignal:ConcatSig] = {port:source}
 
     def source_check(self):
+
+        # Special case for IclScanOutPort
+        # Example ScanRegister X[9:0],  ScanRegister Y[0:9]
+        # Allowed: Source X; -> transforms it to X[0]
+        # Allowed: Source Y; -> transforms it to Y[9]       
+        # Allowed: Source X[0];
+        # Allowed: Source Y[9];
+        # Not allowed: Source X[9];
+        # Not allowed: Source Y[0];
+        # Not allowed: Source X[1:0];
+        for port, source in self.sources.items():
+            if isinstance(self, IclScanOutPort):
+                for concat_item in source.concat_sigs:
+                    print(type(concat_item))
+                    if isinstance(concat_item, IclSignal):
+                        cocnat_icl_item = self.instance.get_icl_item_name(concat_item.get_relative_name())
+                        if isinstance(cocnat_icl_item, IclScanRegister):
+                            size = len(concat_item.get_indexes())
+                            if size == 0:
+                                concat_item.ovveride_indexes([cocnat_icl_item.get_lsb_index()])
+                            elif size == 1:
+                                if cocnat_icl_item.get_lsb_index() != concat_item.get_indexes()[0]:
+                                    raise ValueError(f"ScanOutPort source points to ScanRegister index that does not point to the scan register output: {self.get_name_with_hier()} -> {self.ctx}")
+                            else:
+                                raise ValueError(f"ScanOutPort source points to ScanRegister as a range, must select only one bit: {self.get_name_with_hier()} -> {self.ctx}")
+       
         for port, source in self.sources.items():
             if source is not None:
                 port_size = len(self.get_item_all_indexes([port]))

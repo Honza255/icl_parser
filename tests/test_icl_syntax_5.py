@@ -7,7 +7,7 @@ from tests.config import COMMON_ICL_BLOCKS, COMMON_VHDL_BLOCKS, IjtagSimulationD
 from src.ijtag import *
 
 import cocotb
-from cocotb_tools.runner import get_runner
+from cocotb_tools.runner import get_runner, get_results
 from cocotb.clock import Clock
 
 # Get the directory containing the current file
@@ -29,12 +29,14 @@ class TestIclSyntax5(unittest.TestCase):
             waves=True
         )
 
-        runner.test(
+        result = runner.test(
             hdl_toplevel=module_name,
             test_module=["tests.test_icl_syntax_5"],
             testcase=["test_icl_syntax_5_test"],
             waves=1
         )
+        if get_results(result)[1]:
+            self.fail("Cocotb simulation failed")
 
 @cocotb.test()
 async def test_icl_syntax_5_test(dut):

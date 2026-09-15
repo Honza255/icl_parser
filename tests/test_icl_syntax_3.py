@@ -7,7 +7,7 @@ from tests.config import COMMON_ICL_BLOCKS, COMMON_VHDL_BLOCKS, IjtagSimulationD
 from src.ijtag import *
 
 import cocotb
-from cocotb_tools.runner import get_runner
+from cocotb_tools.runner import get_runner, get_results
 from cocotb.clock import Clock
 
 # Get the directory containing the current file
@@ -30,12 +30,14 @@ class TestIclSyntax3(unittest.TestCase):
             waves=True
         )
 
-        runner.test(
+        result = runner.test(
             hdl_toplevel=module_name,
             test_module=["tests.test_icl_syntax_3"],
             testcase=["TrapOrFlap_simple_test"],
             waves=1
         )
+        if get_results(result)[1]:
+            self.fail("Cocotb simulation failed")
 
 @cocotb.test()
 async def TrapOrFlap_simple_test(dut):
@@ -95,6 +97,10 @@ async def TrapOrFlap_simple_test(dut):
     ijtag.iRead("WI_3.reg8.SR", "191")
     await ijtag.iApply()
     
+    if(ijtag.get_all_errors()):
+        print(ijtag.get_all_errors())
+        raise RuntimeError("Fails during retargeting")
+
     #ijtag.plot_network_graph()
 
 if __name__ == '__main__':

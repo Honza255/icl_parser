@@ -11,7 +11,7 @@ from tests.config import COMMON_ICL_BLOCKS, COMMON_VHDL_BLOCKS, IjtagSimulationD
 from src.ijtag import *
 
 import cocotb
-from cocotb_tools.runner import get_runner
+from cocotb_tools.runner import get_runner, get_results
 from cocotb.clock import Clock
 
 # Get the directory containing the current file
@@ -52,12 +52,14 @@ class TestIclSyntax6(unittest.TestCase):
             waves=True
         )
 
-        runner.test(
+        result = runner.test(
             hdl_toplevel=module_name,
             test_module=["tests.test_icl_syntax_6"],
             testcase=["test_icl_syntax_6_1_test"],
             waves=1
         )
+        if get_results(result)[1]:
+            self.fail("Cocotb simulation failed")
 
     def test_defaul_value_2(self):
         verilog_files = [current_dir + "/test_icls/benchmarks_conv/HDL/Verilog/test_icl_syntax_6.sv"]
@@ -73,12 +75,14 @@ class TestIclSyntax6(unittest.TestCase):
             waves=True
         )
 
-        runner.test(
+        result = runner.test(
             hdl_toplevel=module_name,
             test_module=["tests.test_icl_syntax_6"],
             testcase=["test_icl_syntax_6_2_test"],
             waves=1
         )
+        if get_results(result)[1]:
+            self.fail("Cocotb simulation failed")
 
 @cocotb.test()
 async def test_icl_syntax_6_1_test(dut):

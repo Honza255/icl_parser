@@ -163,3 +163,5 @@ cython_debug/
 tcl/
 bin/
 include/
+*.svg
+sim_build/
