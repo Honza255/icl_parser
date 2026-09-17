@@ -574,6 +574,22 @@ class IclRegisterModel():
 
                 if(conn_name == icl_item_short_name):
 
+                    # A ScanInPort is a bit-serial pass-through (e.g. a SIB's 1-bit
+                    # SI/fromSO): it legitimately binds to a register of any other
+                    # width, shifting one bit through per clock cycle, so the usual
+                    # same-cycle width-fit check below doesn't apply to it in either
+                    # direction. Resolve the driver at its OWN natural width (always
+                    # an exact fit) and wrap by name_idx -- this replicates a
+                    # narrower driver across a wider sink, and picks a representative
+                    # bit of a wider driver for a narrower (often 1-bit) sink.
+                    if type(icl_item) is IclScanInPort:
+                        driver_width = input_connection.get_vector_min_size()
+                        driver_bits = input_connection.get_all_named_indexes_with_prefix(
+                            max_size=driver_width, neg_on=0
+                        )
+                        input_connection = driver_bits[name_idx % len(driver_bits)]
+                        break
+
                     if(unsized):
                         connect_to_size = icl_item_size
                     else:
@@ -582,15 +598,15 @@ class IclRegisterModel():
 
                     init_pol = 0
                     if((type(icl_item) == IclResetPort) or (type(icl_item) == IclToResetPort)):
-                        init_pol = 1 
-                    
+                        init_pol = 1
+
                     if(unsized):
                         input_connection = input_connection.get_all_named_indexes_with_prefix(max_size=icl_item_size, neg_on=init_pol)
                     else:
                         input_connection.resize(connect_to.get_size())
                         input_connection = input_connection.get_all_named_indexes_with_prefix(max_size=connect_to.get_size(), neg_on=init_pol)
-        
-                    input_connection = input_connection[name_idx]                   
+
+                    input_connection = input_connection[name_idx]
                     break
                 else:
                     input_connection = None
