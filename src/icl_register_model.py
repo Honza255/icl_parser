@@ -348,7 +348,7 @@ class IclRegisterModel():
                                 color=node_color,
                                 node_shape=node_shape,
                                 icl_item=icl_item)
-                            if(from_point != self.IMPLICIT_SOURCE):
+                            if((from_point != self.IMPLICIT_SOURCE) and (from_point != "0") and (from_point != "1")):
                                 icl_graph.add_edge(from_point, to_point)
 
                 if(type(icl_item) in [IclScanRegister]):
@@ -562,39 +562,12 @@ class IclRegisterModel():
                 source_connection = f"{mux_in} {source_connection}"
 
         elif(type(icl_item) in self.input_port_types):
-            connections: list[dict[IclSignal, ConcatSig]] = icl_item.get_instance().connections
-            input_connection: ConcatSig = None
-
-            for connection in connections:
-                connect_to: IclSignal = list(connection.keys())[0]
-                input_connection: ConcatSig = list(connection.values())[0]
-
-                conn_name = connect_to.get_name()
-                unsized = (connect_to.get_size() == 0)
-
-                if(conn_name == icl_item_short_name):
-
-                    if(unsized):
-                        connect_to_size = icl_item_size
-                    else:
-                        connect_to_size = connect_to.get_size()
-                    input_connection.check_fit(connect_to_size)
-
-                    init_pol = 0
-                    if((type(icl_item) == IclResetPort) or (type(icl_item) == IclToResetPort)):
-                        init_pol = 1 
-                    
-                    if(unsized):
-                        input_connection = input_connection.get_all_named_indexes_with_prefix(max_size=icl_item_size, neg_on=init_pol)
-                    else:
-                        input_connection.resize(connect_to.get_size())
-                        input_connection = input_connection.get_all_named_indexes_with_prefix(max_size=connect_to.get_size(), neg_on=init_pol)
-        
-                    input_connection = input_connection[name_idx]                   
-                    break
-                else:
-                    input_connection = None
-            source_connection = input_connection
+            connection_routing: dict[str: str] = icl_item.get_instance().connection_routing
+            
+            if name in connection_routing:
+                source_connection = connection_routing[name]
+            else:
+                source_connection = None
         else:
             raise ValueError(f"Not programmed for {type(icl_item)}")
 

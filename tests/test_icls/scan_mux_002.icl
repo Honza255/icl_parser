@@ -45,6 +45,7 @@ Module scan_mux_002 {
 
 	Instance reg8 Of SReg {
 		InputPort SI = mux_3[0]; 
+		InputPort DI = 0;
 		Parameter Size = 5;
 	}
 

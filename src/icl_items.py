@@ -380,7 +380,8 @@ class ConcatSig():
 
     def check_unsized_numbers(self) -> int:
         unsized_numbers = sum(1 for sig in self.concat_sigs if isinstance(sig, IclNumber) and not sig.sized_number())
-        assert unsized_numbers in {0, 1}
+        if not (unsized_numbers in {0, 1}):
+            raise ValueError(f"ConcatSig {self.get_all_sigs()} has {unsized_numbers} unsized numbers max 1") 
         return unsized_numbers 
 
     def negate(self):
@@ -402,6 +403,9 @@ class ConcatSig():
         assert isinstance(items[0], IclNumber)
         return items[0]
     
+    def get_all_sigs(self) -> list[IclSignal | IclNumber]:
+        return self.concat_sigs
+
     # Resize, un-sized number, only one unsized number allowed in concat
     def resize(self, new_size):
         if self.sized_number():
@@ -554,11 +558,13 @@ class ConcatSig():
     def check_fit(self, source_size: int):
         min_size = self.get_vector_min_size()
         if self.sized_number():
-            assert min_size == source_size
+            if min_size != source_size:
+                raise ValueError(f"{self.concat_sigs}({min_size}) does not fit to size of {source_size}, instace: {self.instance.get_name_with_hier()}")
         else:
             difference = source_size - min_size
-            assert(difference >= 0)
-        
+            if not (difference >= 0):
+                raise ValueError(f"{self.concat_sigs}({min_size}) does not fit to size of {source_size}, instace: {self.instance.get_name_with_hier()}")
+
 def checkSigExistance(instance: "IclInstance", signal:IclSignal):
     # print(singal.get_relative_name())
     icl_item = instance.get_icl_item_name(signal.get_relative_name())
@@ -610,12 +616,12 @@ class IclItem:
         if(type(icl_sig) == list):
             indexes = [port.get_indexes() for port in self.ports]
             all_numbers = [num if num else 0 for sublist in indexes for num in sublist]    
+            return all_numbers
         else:
             all_numbers = icl_sig.get_indexes()
             if(not all_numbers):
                 all_numbers = [0]
- 
-        return all_numbers
+            return all_numbers
     
     def get_item_all_named_indexes(self, icl_sig: IclSignal) -> list[str]:
         named_indexes = []
@@ -635,7 +641,7 @@ class IclItem:
         else:
             for index in range(icl_item.get_vector_size()):
                 indexes.append(index)
-                #indexes.reverse()
+            indexes.reverse()
         return indexes
             
     def get_signal_all_named_indexes(self, instance, all_sigs: list[IclSignal]) -> list[str]:
@@ -661,6 +667,9 @@ class IclInstance(IclItem):
         self.parameters = {}
         self.port_seq: dict = {}
         icl_graph = None
+
+        # Populated by check()
+        self.connection_routing: dict[str:str] = {}
         
     def im_top_instace(self):
         return self.get_hier() == ""
@@ -760,12 +769,12 @@ class IclInstance(IclItem):
             else:
                 instances.append(item)
 
-        # 1. Check all instances under this instance
+        # Check all instances under this instance
         for item in instances:
             print(f"{self.get_name_with_hier()} -> Check on {item} {item.get_name()}")
             item.check()
 
-        # 2. IEEE 1687: A module_def having at least one ScanRegister with a specified ResetValue
+        # IEEE 1687: A module_def having at least one ScanRegister with a specified ResetValue
         # shall have at most a single reset_signal so that the source of the reset signal for
         # the ScanRegister is unambiguous. Additionally, that reset signal must be scalar (1-bit),
         # because a multi-bit reset port leaves it ambiguous which bit drives the register reset.
@@ -794,54 +803,7 @@ class IclInstance(IclItem):
                     f"Affected registers: {reg_names}. [{self.ctx}]"
                 )
 
-        # 3. Correct type of input connection into instance this instance
-        # (icl_process is not able to tell what kind of type is source:ConcatSig )
-        for connection in self.connections:
-            in_signal: IclSignal = list(connection.keys())[0]
-            source: ConcatSig = list(connection.values())[0]
-            in_port = self.get_icl_item_name(in_signal.get_name())
-
-            if(isinstance(in_port, IclResetPort)):
-                source.set_type(CONCAT_RESET_T)
-            elif(isinstance(in_port, IclScanInPort)):
-                source.set_type(CONCAT_SCAN_T)
-                for idx, item in enumerate(source.get_all_icl_items()):
-                    if(isinstance(item, IclInstance)):
-                        scan_items = item.get_icl_item_type(IclScanOutPort)
-                        if(len(scan_items) == 1):
-                            new_source = IclSignal(scan_items[0].get_name())
-                            new_source.add_hiearachy(source.concat_sigs[idx].get_relative_name()) 
-                            source.concat_sigs[idx] = new_source
-                            print(f"Warning: Input connection to instance {self.get_hier()} is instance and that is not allowed," +
-                                    f"but because instance has only one scan input it is assumed this is the input connection")
-
-            elif(isinstance(in_port, (IclDataInPort, IclAddressPort, IclReadEnPort, IclWriteEnPort, IclSelectPort))):
-                source.set_type(CONCAT_DATA_T)
-            elif(isinstance(in_port, IclClockPort)):
-                source.set_type(CONCAT_CLOCK_T)
-            elif(isinstance(in_port, IclClockPort)):
-                source.set_type(CONCAT_TCK_T)
-            elif(isinstance(in_port, IclTckPort)):
-                source.set_type(CONCAT_TCK_T)
-            elif(isinstance(in_port, IclShiftEnable)):
-                source.set_type(CONCAT_SE_T)
-            elif(isinstance(in_port, IclCaptureEnable)):
-                source.set_type(CONCAT_CE_T)
-            elif(isinstance(in_port, IclUpdateEnable)):
-                source.set_type(CONCAT_UE_T)
-            elif(isinstance(in_port, IclTmsPort)):
-                source.set_type(CONCAT_TMS_T)
-            elif(isinstance(in_port, IclTrstPort)):
-                source.set_type(CONCAT_TRST_T)
-            else:
-                raise ValueError(f"Unexpected instance input to port {in_port}, ({type(in_port)}) {in_signal.get_name()} to {self.instance.get_name_with_hier()}")
-            
-            # IclInstance is not allowed to source a port without specifing which port is used
-            for item in source.get_all_icl_items():
-                if(isinstance(item, IclInstance)):
-                    raise ValueError(f"IclInstance must specify port which will be passed as input connection, {self.get_hier()} - {in_port.get_name()}")
-                
-        # 4. Check all items (icl items) which are not instances
+        # Check all items (icl items) which are not instances
         print(non_instaces)
         for item in non_instaces:
             print("Check", item, item.get_name())
@@ -920,6 +882,111 @@ class IclInstance(IclItem):
                 self.add_icl_item(scan_interface)
                 scan_interface.check()
 
+        # 3. Correct type of input connection into instance this instance
+        # (icl_process is not able to tell what kind of type is source:ConcatSig )
+        for connection in self.connections:
+            in_signal: IclSignal = list(connection.keys())[0]
+            source: ConcatSig = list(connection.values())[0]
+            in_port = self.get_icl_item_name(in_signal.get_name())
+
+            if(isinstance(in_port, IclResetPort)):
+                source.set_type(CONCAT_RESET_T)
+            elif(isinstance(in_port, IclScanInPort)):
+                source.set_type(CONCAT_SCAN_T)
+                for idx, item in enumerate(source.get_all_icl_items()):
+                    if(isinstance(item, IclInstance)):
+                        scan_items = item.get_icl_item_type(IclScanOutPort)
+                        if(len(scan_items) == 1):
+                            new_source = IclSignal(scan_items[0].get_name())
+                            new_source.add_hiearachy(source.concat_sigs[idx].get_relative_name()) 
+                            source.concat_sigs[idx] = new_source
+                            print(f"Warning: Input connection to instance {self.get_hier()} is instance and that is not allowed," +
+                                    f"but because instance has only one scan input it is assumed this is the input connection")
+
+            elif(isinstance(in_port, (IclDataInPort, IclAddressPort, IclReadEnPort, IclWriteEnPort, IclSelectPort))):
+                source.set_type(CONCAT_DATA_T)
+            elif(isinstance(in_port, IclClockPort)):
+                source.set_type(CONCAT_CLOCK_T)
+            elif(isinstance(in_port, IclClockPort)):
+                source.set_type(CONCAT_TCK_T)
+            elif(isinstance(in_port, IclTckPort)):
+                source.set_type(CONCAT_TCK_T)
+            elif(isinstance(in_port, IclShiftEnable)):
+                source.set_type(CONCAT_SE_T)
+            elif(isinstance(in_port, IclCaptureEnable)):
+                source.set_type(CONCAT_CE_T)
+            elif(isinstance(in_port, IclUpdateEnable)):
+                source.set_type(CONCAT_UE_T)
+            elif(isinstance(in_port, IclTmsPort)):
+                source.set_type(CONCAT_TMS_T)
+            elif(isinstance(in_port, IclTrstPort)):
+                source.set_type(CONCAT_TRST_T)
+            else:
+                raise ValueError(f"Unexpected instance input to port {in_port}, ({type(in_port)}) {in_signal.get_name()} to {self.instance.get_name_with_hier()}")
+            
+            # IclInstance is not allowed to source a port without specifing which port is used
+            for item in source.get_all_icl_items():
+                if(isinstance(item, IclInstance)):
+                    raise ValueError(f"IclInstance must specify port which will be passed as input connection, {self.get_hier()} - {in_port.get_name()}")
+
+        # Solve connection between this instance and child instances
+        child_instance: IclInstance
+        for child_instance in instances:
+            all_indexed_destiations: list[str] = [] 
+            all_indexed_scan_in_destiations: list[str] = []
+            all_indexed_data_in_destiations: list[str] = []
+            all_indexed_scan_in_ports: list[str] = [indexed_port for port in child_instance.get_icl_item_type(IclScanInPort) for indexed_port in port.get_all_named_indexes()]
+            all_indexed_data_in_ports: list[str] = [indexed_port for port in child_instance.get_icl_item_type(IclDataInPort) for indexed_port in port.get_all_named_indexes()]
+            
+            print(f"{self.get_name_with_hier()} -> Solving connections for instance: {child_instance}, {child_instance.get_name_with_hier()}")
+
+            for connection in child_instance.connections:
+                destination: IclSignal = list(connection.keys())[0]
+                source: ConcatSig = list(connection.values())[0]
+                in_port = child_instance.get_icl_item_name(destination.get_name())
+                
+                unsized_destination = (destination.get_size() == 0)
+                if unsized_destination:
+                    destination_size = len(child_instance.get_signal_indexes(child_instance, destination))
+                    destination_named_indexes = child_instance.get_signal_all_named_indexes(child_instance, [destination])
+                else:
+                    destination_size = destination.get_size()
+                    destination_named_indexes = child_instance.get_signal_all_named_indexes(child_instance, [destination])
+
+                # Connection between source and destination must match in size, requried by standard 
+                try:
+                    source.check_fit(destination_size)
+                except Exception as e:
+                    raise ValueError(f"Connection {destination} = {source.get_all_sigs()}, size mistmach, instance: {child_instance.get_name_with_hier()}") from e
+
+                for indexed_name in destination_named_indexes:
+                    if isinstance(in_port, IclScanInPort):
+                        all_indexed_scan_in_destiations.append(indexed_name) 
+                    
+                    if isinstance(in_port, IclDataInPort):
+                        all_indexed_data_in_destiations.append(indexed_name) 
+                    
+                    if indexed_name in all_indexed_destiations:
+                        raise ValueError(f"Input port: {indexed_name} of module instance: {child_instance.get_name_with_hier()} already once defined in connections")
+                    else:
+                        all_indexed_destiations.append(indexed_name)
+
+                init_pol = 0
+                if((type(in_port) == IclResetPort) or (type(in_port) == IclToResetPort)):
+                    init_pol = 1 
+                
+                all_indexed_source = source.get_all_named_indexes_with_prefix(max_size=destination_size, neg_on=init_pol)
+                for idx, _ in enumerate(destination_named_indexes):
+                    child_instance.connection_routing[destination_named_indexes[idx]] = all_indexed_source[idx]
+            
+            # Check that every bit of scan in port or data in port has a connection
+            scan_in_missing = list(set(all_indexed_scan_in_ports) - set(all_indexed_scan_in_destiations))
+            if scan_in_missing:
+                raise ValueError(f"Missing ScanInPort connections: {scan_in_missing}, instance: {child_instance.get_name_with_hier()}")
+            data_in_missing = list(set(all_indexed_data_in_ports) - set(all_indexed_data_in_destiations))
+            if data_in_missing:
+                raise ValueError(f"Missing DataInPort connections: {data_in_missing}, instance: {child_instance.get_name_with_hier()}")
+                
     # Create list of instances sorted from most nested instances to least nested instances
     def list_instances(self, lvl=0, hier="") -> list:
         icl_instance_items = self.get_icl_item_type(IclInstance)
